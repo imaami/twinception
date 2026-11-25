@@ -1,6 +1,7 @@
 override SRC_debruijn.so := \
   debruijn_plugin.c         \
   debruijn.c                \
+  debruijn_order.c          \
   util.c
 
 # A plugin has no constructor and no writable data of its own (plugin.h).

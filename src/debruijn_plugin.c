@@ -23,6 +23,9 @@
  *   of them, one on a line.
  * - windows: for each place in a word, the value of the order bits that
  *   start there, one on a line.
+ * - rank: the numeric position of a word (or address) within its order.
+ * - unrank: the word and address at that zero-based rank.
+ * - ordered: rows as for unrank, from rank first on, at most limit rows.
  *
  * The plugin has no options, no instances and no data of its own, and a
  * call ends before its start() returns. check_debruijn (tests/askai.py)
@@ -59,6 +62,7 @@ enum {
         X(ORDER,   "order")         \
         X(MASK,    "mask")          \
         X(ADDRESS, "address")       \
+        X(RANK,    "rank")          \
         X(FIRST,   "first")         \
         X(LIMIT,   "limit")         \
         X(OFFSET,  "offset")
@@ -76,8 +80,8 @@ static struct cstr_view const debruijn_plugin_arg_names[] = {
 #define A(id) (1U << DEBRUIJN_PLUGIN_ARG_##id)
 
 /* The actions of the tool: X(ID, name, arguments), with the arguments that
- * the action needs. children also takes first and limit. Every action
- * takes offset.
+ * the action needs. rank alternatively takes an address. children and
+ * ordered also take first and limit. Every action takes offset.
  */
 #define DEBRUIJN_PLUGIN_ACTION_LIST(X)                        \
         X(EXPAND,   "expand",   A(WORD) | A(ORDER) | A(MASK)) \
@@ -85,7 +89,10 @@ static struct cstr_view const debruijn_plugin_arg_names[] = {
         X(PATH,     "path",     A(ADDRESS))                   \
         X(ADDRESS,  "address",  A(WORD) | A(ORDER))           \
         X(CHILDREN, "children", A(WORD) | A(ORDER))           \
-        X(WINDOWS,  "windows",  A(WORD) | A(ORDER))
+        X(WINDOWS,  "windows",  A(WORD) | A(ORDER))           \
+        X(RANK,     "rank",     A(WORD) | A(ORDER))           \
+        X(UNRANK,   "unrank",   A(ORDER) | A(RANK))           \
+        X(ORDERED,  "ordered",  A(ORDER))
 
 #define DEBRUIJN_PLUGIN_ACTION_ENUM(id, ...) DEBRUIJN_PLUGIN_##id,
 enum debruijn_plugin_action : uint8_t {
@@ -275,10 +282,23 @@ debruijn_plugin_chain (struct debruijn_plugin_out *out,
 	debruijn_plugin_line(out, "\n");
 }
 
-/* path: the words on the way from the root for the address @p text. */
 static void
-debruijn_plugin_path (struct debruijn_plugin_out *out,
-                      struct cstr_view            text)
+debruijn_plugin_rank (struct debruijn_plugin_out *out, uint64_t word, unsigned order)
+{
+	unsigned rank;
+	if (debruijn_rank(&rank, word, order)) {
+		debruijn_plugin_no_word(out->slot, word, order);
+		return;
+	}
+	debruijn_plugin_line(out, "%u\n", rank);
+	debruijn_plugin_end(out);
+}
+
+/* Resolve an address once, for path or rank. */
+static void
+debruijn_plugin_from_address (struct debruijn_plugin_out *out,
+                              struct cstr_view            text,
+                              enum debruijn_plugin_action action)
 {
 	unsigned masks[DEBRUIJN_PLUGIN_DEPTH];
 	size_t n;
@@ -294,32 +314,41 @@ debruijn_plugin_path (struct debruijn_plugin_out *out,
 		                                   "order."), TOOL_FAILED);
 		return;
 	}
+	if (action == DEBRUIJN_PLUGIN_RANK) {
+		debruijn_plugin_rank(out, words[n], DEBRUIJN_MIN_ORDER + (unsigned)n);
+		return;
+	}
 	debruijn_plugin_chain(out, words, n + 1);
 	debruijn_plugin_end(out);
 }
 
-/* address: the address of @p word, a word of order 3 to 6. */
-static void
+/* Append the address and newline. An order-2 row has no masks. */
+static int
 debruijn_plugin_locate (struct debruijn_plugin_out *out,
                         uint64_t                    word,
                         unsigned                    order)
 {
 	unsigned masks[DEBRUIJN_PLUGIN_DEPTH];
-	uint64_t words[DEBRUIJN_PLUGIN_DEPTH + 1];
 	size_t const n = order - DEBRUIJN_MIN_ORDER;
-	words[n] = word;
-	int e = debruijn_valid(word, order) ? 0 : EINVAL;
-	for (size_t i = n; !e && i; --i)
-		e = debruijn_collapse(&words[i - 1], &masks[i - 1], words[i],
-		                      DEBRUIJN_MIN_ORDER + (unsigned)i);
-	if (e) {
-		debruijn_plugin_no_word(out->slot, word, order);
-		return;
+	for (size_t i = n; i; --i) {
+		int e = debruijn_collapse(&word, &masks[i - 1], word, DEBRUIJN_MIN_ORDER + (unsigned)i);
+		if (e)
+			return e;
 	}
 	for (size_t i = 0; i < n; ++i)
 		debruijn_plugin_line(out, "%s%u", i ? "." : "", masks[i]);
 	debruijn_plugin_line(out, "\n");
-	debruijn_plugin_end(out);
+	return 0;
+}
+
+static int
+debruijn_plugin_emit (uint64_t word, unsigned order, void *arg)
+{
+	struct debruijn_plugin_out *out = arg;
+	debruijn_plugin_line(out, "0x%0*" PRIx64 "%s", debruijn_plugin_digits(order), word,
+	                     order == DEBRUIJN_MIN_ORDER ? "" : " ");
+	int e = debruijn_plugin_locate(out, word, order);
+	return e ? e : out->e;
 }
 
 /* children: the children of @p word from the mask @p first on, at most
@@ -401,20 +430,26 @@ debruijn_plugin_definition (void const *service)
 		"root, as 17.09af.04653adf.0218a392cd3d5dbf. address: the address of word. "
 		"children: the children of word from the mask first on, at most limit, one on a "
 		"line. windows: for each place in word from the most significant bit, the value "
-		"of the order bits that start there, one on a line.\"},"
+		"of the order bits that start there, one on a line. rank: the zero-based position "
+		"in unsigned word order; give either address or word and order. unrank: at rank "
+		"in order, return word and decimal dotted address separated by a space (word "
+		"alone for order 2). ordered: the same rows in ascending order from rank first "
+		"on, at most limit rows.\"},"
 		"\"word\":{\"type\":\"string\",\"description\":\"A word as 1 to 16 hexadecimal "
 		"digits, with or without 0x.\"},"
 		"\"order\":{\"type\":\"integer\",\"minimum\":2,\"maximum\":6,\"description\":"
 		"\"The order of word: 2 to 5 for expand and children, 3 to 6 for collapse and "
-		"address, 2 to 6 for windows.\"},"
+		"address, 2 to 6 for windows, rank, unrank and ordered.\"},"
 		"\"mask\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"For expand: "
 		"at most 1, 7, 127 and 32767 for the orders 2, 3, 4 and 5.\"},"
-		"\"address\":{\"type\":\"string\",\"description\":\"For path: 1 to 4 masks "
+		"\"address\":{\"type\":\"string\",\"description\":\"For path or rank: 1 to 4 masks "
 		"with a dot between two. A mask is decimal, or hexadecimal after 0x.\"},"
+		"\"rank\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":67108863,\"description\":"
+		"\"For unrank: less than 1, 2, 16, 2048 or 67108864 for orders 2 through 6.\"},"
 		"\"first\":{\"type\":\"integer\",\"minimum\":0,\"default\":0,\"description\":"
-		"\"For children: the mask of the first child.\"},"
+		"\"For children: the first mask. For ordered: the first rank (empty past end).\"},"
 		"\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":32768,\"default\":64,"
-		"\"description\":\"For children: the most children.\"},"
+		"\"description\":\"Maximum rows: up to 32768 for children or 256 for ordered.\"},"
 		"\"offset\":{\"type\":\"integer\",\"minimum\":0,\"description\":\""
 		TOOL_OFFSET_ABOUT "\"}},"
 		"\"required\":[\"action\"],\"additionalProperties\":false},"
@@ -452,11 +487,12 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 		mcp_slot_tell(slot, actions, TOOL_FAILED);
 		return;
 	}
-	/* An action takes the arguments that it needs, and offset. children
-	 * also takes first and limit. */
-	uint32_t const needs = debruijn_plugin_needs[action];
+	/* The address form of rank infers order and excludes word and order. */
+	uint32_t const needs = action == DEBRUIJN_PLUGIN_RANK && (seen & A(ADDRESS))
+	                     ? A(ADDRESS) : debruijn_plugin_needs[action];
+	bool const sequence = action == DEBRUIJN_PLUGIN_CHILDREN || action == DEBRUIJN_PLUGIN_ORDERED;
 	uint32_t const takes = needs | A(ACTION) | A(OFFSET) |
-	                       (action == DEBRUIJN_PLUGIN_CHILDREN ? A(FIRST) | A(LIMIT) : 0);
+	                       (sequence ? A(FIRST) | A(LIMIT) : 0);
 	uint32_t const wrong = (needs & ~(uint32_t)seen) | ((uint32_t)seen & ~takes);
 	if (wrong) {
 		unsigned const arg = stdc_trailing_zeros(wrong);
@@ -498,12 +534,23 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 		               (unsigned)order);
 		return;
 	}
+	/* unrank is the strict one-row form of ordered. order is validated. */
+	if (needs & A(RANK)) {
+		unsigned count = debruijn_word_count((unsigned)order);
+		if (jb_uint_checked(of[DEBRUIJN_PLUGIN_ARG_RANK], count - 1U, &first)) {
+			mcp_slot_tellf(slot, TOOL_FAILED, "rank must be an integer from 0 to %u for order %u.",
+			               count - 1U, (unsigned)order);
+			return;
+		}
+		limit = 1;
+	}
+	unsigned cap = action == DEBRUIJN_PLUGIN_ORDERED ? 256 : 32768;
 	if (((seen >> DEBRUIJN_PLUGIN_ARG_FIRST & 1) &&
 	     jb_uint_checked(of[DEBRUIJN_PLUGIN_ARG_FIRST], UINT32_MAX, &first)) ||
 	    ((seen >> DEBRUIJN_PLUGIN_ARG_LIMIT & 1) &&
-	     !(limit = jb_count(of[DEBRUIJN_PLUGIN_ARG_LIMIT], 32768)))) {
-		mcp_slot_tell(slot, CSTR_VIEW("first must be a whole number from 0, and limit a "
-		                              "whole number from 1 to 32768."), TOOL_FAILED);
+	     !(limit = jb_count(of[DEBRUIJN_PLUGIN_ARG_LIMIT], cap)))) {
+		mcp_slot_tellf(slot, TOOL_FAILED, "first must be a whole number from 0, and limit a "
+		               "whole number from 1 to %u.", cap);
 		return;
 	}
 	if (mcp_slot_offset(slot, args))
@@ -516,11 +563,27 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 	case DEBRUIJN_PLUGIN_COLLAPSE:
 		debruijn_plugin_collapse(&out, word, (unsigned)order);
 		break;
+	case DEBRUIJN_PLUGIN_RANK:
+		if (!(needs & A(ADDRESS))) {
+			debruijn_plugin_rank(&out, word, (unsigned)order);
+			break;
+		}
+		[[fallthrough]];
 	case DEBRUIJN_PLUGIN_PATH:
-		debruijn_plugin_path(&out, jb_view(of[DEBRUIJN_PLUGIN_ARG_ADDRESS]));
+		debruijn_plugin_from_address(&out, jb_view(of[DEBRUIJN_PLUGIN_ARG_ADDRESS]),
+		                             (enum debruijn_plugin_action)action);
 		break;
 	case DEBRUIJN_PLUGIN_ADDRESS:
-		debruijn_plugin_locate(&out, word, (unsigned)order);
+		if (debruijn_plugin_locate(&out, word, (unsigned)order))
+			debruijn_plugin_no_word(slot, word, (unsigned)order);
+		else
+			debruijn_plugin_end(&out);
+		break;
+	case DEBRUIJN_PLUGIN_UNRANK:
+	case DEBRUIJN_PLUGIN_ORDERED:
+		out.e = debruijn_ordered((unsigned)order, (unsigned)first, (unsigned)limit,
+		                         debruijn_plugin_emit, &out);
+		debruijn_plugin_end(&out);
 		break;
 	case DEBRUIJN_PLUGIN_CHILDREN:
 		debruijn_plugin_children(&out, word, (unsigned)order, first, limit);

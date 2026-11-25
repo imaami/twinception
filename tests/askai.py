@@ -20024,7 +20024,8 @@ def check_debruijn(binary, up, debruijn):
             assert [t["name"] for t in tools] == ["ask_ai", "debruijn"], tools
             schema = tools[1]["inputSchema"]
             assert schema["properties"]["action"]["enum"] == \
-                ["expand", "collapse", "path", "address", "children", "windows"] and \
+                ["expand", "collapse", "path", "address", "children", "windows",
+                 "rank", "unrank", "ordered"] and \
                 schema["required"] == ["action"] and \
                 schema["properties"]["offset"]["description"] == OFFSET_ABOUT, schema
 
@@ -20069,6 +20070,40 @@ def check_debruijn(binary, up, debruijn):
             values = ok(ai, action="windows", word="0x0218a392cd3d5dbf", order=6).split()
             assert sorted(map(int, values)) == list(range(64)), values
 
+            # Independent order-4 oracle: old mask-order traversal, sorted by word.
+            pairs = []
+            for m, parent in enumerate(ok(ai, action="children", word="3", order=2).split()):
+                children = ok(ai, action="children", word=parent, order=3).split()
+                pairs.extend((w, f"{m}.{j}") for j, w in enumerate(children))
+            pairs.sort(key=lambda p: int(p[0], 16))
+            rows = [f"{w} {a}\n" for w, a in pairs]
+            assert len(rows) == 16 and ok(ai, action="ordered", order=4) == "".join(rows)
+            for k, (w, a) in enumerate(pairs):
+                assert ok(ai, action="rank", word=w, order=4) == f"{k}\n"
+                assert ok(ai, action="rank", address=a) == f"{k}\n"
+                assert ok(ai, action="unrank", order=4, rank=k) == rows[k]
+            assert ok(ai, action="ordered", order=4, first=7, limit=3) == "".join(rows[7:10])
+            assert ok(ai, action="ordered", order=4, first=7, limit=3,
+                      offset=len(rows[7])) == "".join(rows[8:10])
+            assert ok(ai, action="ordered", order=4, first=16) == ""
+            assert ok(ai, action="unrank", order=2, rank=0) == "0x3\n"
+            assert ok(ai, action="rank", order=2, word="3") == "0\n"
+
+            # A page crosses parent boundaries. Large seeks need no table or scan.
+            assert ok(ai, action="ordered", order=6, limit=3) == (
+                "0x0218a392cd3d5dbf 1.7.127.32767\n"
+                "0x0218a392cd3dbabf 1.7.111.32767\n"
+                "0x0218a392cd3f576f 1.7.127.16383\n")
+            for k, w, a in ((1234567, "0x021d16a7b37e4ae3", "1.6.27.22219"),
+                            (33554432, "0x0308a4d5971dbcfd", "0.7.127.32766"),
+                            (67108863, "0x03f79d71b4cb0a89", "0.0.0.0")):
+                assert ok(ai, action="unrank", order=6, rank=k) == f"{w} {a}\n"
+                assert ok(ai, action="rank", order=6, word=w) == f"{k}\n"
+                assert ok(ai, action="rank", address=a) == f"{k}\n"
+            assert ok(ai, action="ordered", order=6, first=67108862, limit=256) == (
+                "0x03f79d71b4cb0915 0.0.0.2\n0x03f79d71b4cb0a89 0.0.0.0\n")
+            assert ok(ai, action="ordered", order=6, first=4294967295) == ""
+
             no_word = "0x1e is no word of order 3."
             for arguments, text in (
                     ({"action": "expand", "word": "0x1e", "order": 3, "mask": 0}, no_word),
@@ -20076,8 +20111,21 @@ def check_debruijn(binary, up, debruijn):
                     ({"action": "address", "word": "0x1e", "order": 3}, no_word),
                     ({"action": "children", "word": "0x1e", "order": 3}, no_word),
                     ({"action": "windows", "word": "0x1e", "order": 3}, no_word),
+                    ({"action": "rank", "word": "0x1e", "order": 3}, no_word),
+                    ({"action": "rank", "address": "1.8"}, None),
+                    ({"action": "rank", "address": "1", "order": 3}, "rank takes no argument order."),
+                    ({"action": "unrank", "order": 2, "rank": 1},
+                     "rank must be an integer from 0 to 0 for order 2."),
+                    ({"action": "unrank", "order": 6, "rank": -1},
+                     "rank must be an integer from 0 to 67108863 for order 6."),
+                    ({"action": "unrank", "order": 6, "rank": 67108864},
+                     "rank must be an integer from 0 to 67108863 for order 6."),
+                    ({"action": "unrank", "order": 6}, "unrank needs the argument rank."),
+                    ({"action": "ordered", "order": 6, "limit": 257},
+                     "first must be a whole number from 0, and limit a whole number from 1 to 256."),
+                    ({"action": "ordered", "order": 6, "rank": 0}, "ordered takes no argument rank."),
                     ({"action": "grow"}, "The action argument must be one of: expand, "
-                     "collapse, path, address, children, windows."),
+                     "collapse, path, address, children, windows, rank, unrank, ordered."),
                     ({"action": "expand", "word": "0x17", "order": 3},
                      "expand needs the argument mask."),
                     ({"action": "collapse", "word": "0x17", "order": 3, "mask": 1},
@@ -20117,8 +20165,8 @@ def check_debruijn(binary, up, debruijn):
                 got = refused(ai, **arguments)
                 assert got == text if text else got.startswith("The address argument"), \
                     (arguments, got)
-    print("debruijn: the tool listed; expand, collapse, path, address, children with first "
-          "and limit, windows; refused words, orders, masks, addresses and arguments: PASS")
+    print("debruijn: mask tree, windows, numeric rank, unrank and ordered pages; "
+          "refused words, orders, ranks, masks, addresses and arguments: PASS")
 
 
 def check_godbolt(binary, up, godbolt):

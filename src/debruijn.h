@@ -74,4 +74,26 @@ debruijn_collapse (uint64_t *seed,
                    uint64_t  word,
                    unsigned  order);
 
+/** Number of normalized words, or zero for an unsupported order. */
+extern unsigned
+debruijn_word_count (unsigned order);
+
+/** Numeric position among normalized words of this order, starting at zero.
+ * Return EINVAL for invalid input or EFAULT for a null output; leave the
+ * output unchanged on failure.
+ */
+extern int
+debruijn_rank (unsigned *rank, uint64_t word, unsigned order);
+
+typedef int debruijn_emit_fn (uint64_t word, unsigned order, void *arg);
+
+/** Emit at most limit words in numeric order, starting at zero-based first.
+ * Seeking skips prefix blocks, not individual words. Nothing is emitted if
+ * first is past the end or limit is zero. Stop on and return the first emit
+ * error. Return EINVAL for invalid order or EFAULT for a null callback.
+ */
+extern int
+debruijn_ordered (unsigned order, unsigned first, unsigned limit,
+                  debruijn_emit_fn *emit, void *arg);
+
 #endif /* DEBRUIJN_H_ */

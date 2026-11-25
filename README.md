@@ -2202,8 +2202,8 @@ can differ. The `keep` of a request for a short link is a day.
 
 `debruijn.so` adds one tool, `debruijn`, that explores the binary de Bruijn
 words of the orders 2 to 6. `make debruijn.so` builds it from
-`src/debruijn_plugin.c` and the construction in `src/debruijn.c`. The plugin
-has no options:
+`src/debruijn_plugin.c`, the mask construction in `src/debruijn.c` and the
+numeric ordering in `src/debruijn_order.c`. The plugin has no options:
 
 ```json
 { "path": "/usr/libexec/askai/debruijn.so" }
@@ -2228,6 +2228,17 @@ The output of an action is its result alone, as the output of a calculator:
 | `address` | `word`, `order` 3 to 6 | the address, such as `1.7.127.32767` |
 | `children` | `word`, `order` 2 to 5, `first`, `limit` | the children from the mask `first` on, at most `limit` (64 by default), one on a line |
 | `windows` | `word`, `order` 2 to 6 | for each place from the most significant bit, the value of the `order` bits that start there, one on a line |
+| `rank` | either `word` and `order` 2 to 6, or `address` alone | zero-based rank among *all* normalized words of that order, sorted as unsigned integers |
+| `unrank` | `order` 2 to 6, `rank` | the word and its dotted decimal mask address, separated by a space; the root is just `0x3` |
+| `ordered` | `order` 2 to 6, optional `first` and `limit` | consecutive `unrank` rows from rank `first` (default 0), at most `limit` (1 to 256, default 64) |
+
+For example, `unrank` with `order:6, rank:1234567` returns
+`0x021d16a7b37e4ae3 1.6.27.22219`; `rank` with `address:"1.6.27.22219"`
+returns `1234567`. The orders 2 through 6 contain 1, 2, 16, 2048 and
+67108864 words respectively. `unrank` refuses a rank outside its order;
+`ordered` stops at the end and returns no rows for `first` past the last rank.
+It seeks by counting whole prefix blocks, not by visiting earlier words.
+`children` still enumerates a single parent's children in *mask* order.
 
 An action refuses an argument that it does not use, and a word that is no
 word of its order.
