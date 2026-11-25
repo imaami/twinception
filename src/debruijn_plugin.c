@@ -254,7 +254,7 @@ debruijn_plugin_no_word (struct mcp_slot *slot,
                          uint64_t         word,
                          unsigned         order)
 {
-	if (order)
+	if (order >= DEBRUIJN_MIN_ORDER)
 		mcp_slot_tellf(slot, TOOL_FAILED, "0x%0*" PRIx64 " is no word of order %u.",
 		               debruijn_plugin_digits(order), word, order);
 	else
