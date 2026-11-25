@@ -2218,17 +2218,25 @@ word of order n from 2 to 5 has one child of order n+1 for each mask: 2, 8,
 is the child of exactly one word. The address of a word is the masks on the
 way from the root, such as `1.7.127.32767`.
 
+An action also takes a rotation of a word, such as `0x9af0` for `0x09af`,
+and rotates it to start with its n zero bits before it reads it; `windows`
+reads the rotation as given. An action that takes `word` takes `order` too,
+and without `order` the bit width of the word gives the order: a word of
+order n in any rotation is 2^n - n to 2^n bits wide, so 2 to 4 bits is
+order 2, 5 to 8 bits order 3, 12 to 16 bits order 4, 27 to 32 bits order 5
+and 58 to 64 bits order 6.
+
 The output of an action is its result alone, as the output of a calculator:
 
 | Action | Arguments | Output |
 | ------ | --------- | ------ |
-| `expand` | `word`, `order` 2 to 5, `mask` | the child, such as `0x04653adf` |
-| `collapse` | `word`, `order` 3 to 6 | the parent and the mask of the word in the parent, such as `0x09af 127` |
+| `expand` | `word` of order 2 to 5, `mask` | the child, such as `0x04653adf` |
+| `collapse` | `word` of order 3 to 6 | the parent and the mask of the word in the parent, such as `0x09af 127` |
 | `path` | `address` | the words of the address without the root, such as `17.09af.04653adf.0218a392cd3d5dbf` |
-| `address` | `word`, `order` 3 to 6 | the address, such as `1.7.127.32767` |
-| `children` | `word`, `order` 2 to 5, `first`, `limit` | the children from the mask `first` on, at most `limit` (64 by default), one on a line |
-| `windows` | `word`, `order` 2 to 6 | for each place from the most significant bit, the value of the `order` bits that start there, one on a line |
-| `rank` | either `word` and `order` 2 to 6, or `address` alone | zero-based rank among *all* normalized words of that order, sorted as unsigned integers |
+| `address` | `word` of order 3 to 6 | the address, such as `1.7.127.32767` |
+| `children` | `word` of order 2 to 5, `first`, `limit` | the children from the mask `first` on, at most `limit` (64 by default), one on a line |
+| `windows` | `word` of order 2 to 6 | for each place from the most significant bit, the value of the n bits that start there for order n, one on a line |
+| `rank` | either `word` of order 2 to 6, or `address` alone | zero-based rank among *all* normalized words of that order, sorted as unsigned integers |
 | `unrank` | `order` 2 to 6, `rank` | the word and its dotted decimal mask address, separated by a space; the root is just `0x3` |
 | `ordered` | `order` 2 to 6, optional `first` and `limit` | consecutive `unrank` rows from rank `first` (default 0), at most `limit` (1 to 256, default 64) |
 
@@ -2241,7 +2249,7 @@ It seeks by counting whole prefix blocks, not by visiting earlier words.
 `children` still enumerates a single parent's children in *mask* order.
 
 An action refuses an argument that it does not use, and a word that is no
-word of its order.
+word of its order in any rotation.
 
 ## Limits
 

@@ -27,6 +27,12 @@
  * - unrank: the word and address at that zero-based rank.
  * - ordered: rows as for unrank, from rank first on, at most limit rows.
  *
+ * An action takes a word in any rotation, and rotates it to start with its
+ * n zero bits (debruijn_normalize()) before the library reads it. windows
+ * reads the word as it is given. Without the argument order, the bit width
+ * of the word gives the order: a rotation of a word of order n is 2^n - n to
+ * 2^n bits wide.
+ *
  * The plugin has no options, no instances and no data of its own, and a
  * call ends before its start() returns. check_debruijn (tests/askai.py)
  * runs it.
@@ -80,18 +86,19 @@ static struct cstr_view const debruijn_plugin_arg_names[] = {
 #define A(id) (1U << DEBRUIJN_PLUGIN_ARG_##id)
 
 /* The actions of the tool: X(ID, name, arguments), with the arguments that
- * the action needs. rank alternatively takes an address. children and
- * ordered also take first and limit. Every action takes offset.
+ * the action needs. An action that needs word also takes order. rank
+ * alternatively takes an address. children and ordered also take first and
+ * limit. Every action takes offset.
  */
-#define DEBRUIJN_PLUGIN_ACTION_LIST(X)                        \
-        X(EXPAND,   "expand",   A(WORD) | A(ORDER) | A(MASK)) \
-        X(COLLAPSE, "collapse", A(WORD) | A(ORDER))           \
-        X(PATH,     "path",     A(ADDRESS))                   \
-        X(ADDRESS,  "address",  A(WORD) | A(ORDER))           \
-        X(CHILDREN, "children", A(WORD) | A(ORDER))           \
-        X(WINDOWS,  "windows",  A(WORD) | A(ORDER))           \
-        X(RANK,     "rank",     A(WORD) | A(ORDER))           \
-        X(UNRANK,   "unrank",   A(ORDER) | A(RANK))           \
+#define DEBRUIJN_PLUGIN_ACTION_LIST(X)                \
+        X(EXPAND,   "expand",   A(WORD) | A(MASK))    \
+        X(COLLAPSE, "collapse", A(WORD))              \
+        X(PATH,     "path",     A(ADDRESS))           \
+        X(ADDRESS,  "address",  A(WORD))              \
+        X(CHILDREN, "children", A(WORD))              \
+        X(WINDOWS,  "windows",  A(WORD))              \
+        X(RANK,     "rank",     A(WORD))              \
+        X(UNRANK,   "unrank",   A(ORDER) | A(RANK))   \
         X(ORDERED,  "ordered",  A(ORDER))
 
 #define DEBRUIJN_PLUGIN_ACTION_ENUM(id, ...) DEBRUIJN_PLUGIN_##id,
@@ -223,14 +230,34 @@ debruijn_plugin_address (struct cstr_view  text,
 	return 0;
 }
 
-/* Refuses a word that debruijn.h does not accept as a word of its order. */
+/* Returns the order of @p word from its bit width, or 0 if no order has that
+ * width. A rotation of a word of order n is 2^n - n to 2^n bits wide: the n
+ * zero bits of the word can be at its top, in whole or in part, or not.
+ */
+static unsigned
+debruijn_plugin_order (uint64_t word)
+{
+	unsigned const width = stdc_bit_width(word);
+	unsigned order = DEBRUIJN_MIN_ORDER;
+	while (width > 1U << order)
+		++order;
+	return width + order >= 1U << order ? order : 0;
+}
+
+/* Refuses a word that is no rotation of a word of the order @p order, or of
+ * any order if @p order is 0.
+ */
 static void
 debruijn_plugin_no_word (struct mcp_slot *slot,
                          uint64_t         word,
                          unsigned         order)
 {
-	mcp_slot_tellf(slot, TOOL_FAILED, "0x%0*" PRIx64 " is no word of order %u.",
-	               debruijn_plugin_digits(order), word, order);
+	if (order)
+		mcp_slot_tellf(slot, TOOL_FAILED, "0x%0*" PRIx64 " is no word of order %u.",
+		               debruijn_plugin_digits(order), word, order);
+	else
+		mcp_slot_tellf(slot, TOOL_FAILED, "0x%" PRIx64 " is no word of any order from %u "
+		               "to %u.", word, DEBRUIJN_MIN_ORDER, DEBRUIJN_MAX_ORDER);
 }
 
 /* expand: the child of @p word for @p mask. */
@@ -377,19 +404,15 @@ debruijn_plugin_children (struct debruijn_plugin_out *out,
 	debruijn_plugin_end(out);
 }
 
-/* windows: the bits of @p word, and for each place in the word the value of
- * the order bits that start there. The bits after the end of the word are
- * the bits at its start.
+/* windows: for each place in @p word, the value of the @p order bits that
+ * start there. The word can be in any rotation. The bits after the end of
+ * the word are the bits at its start.
  */
 static void
 debruijn_plugin_windows (struct debruijn_plugin_out *out,
                          uint64_t                    word,
                          unsigned                    order)
 {
-	if (!debruijn_valid(word, order)) {
-		debruijn_plugin_no_word(out->slot, word, order);
-		return;
-	}
 	/* Place 0 is the most significant bit. A window that runs over the end
 	 * of the word reads on at its start: the bit positions count down
 	 * modulo the 2^order bits. */
@@ -417,11 +440,13 @@ debruijn_plugin_definition (void const *service)
 		"\"description\":\"Binary de Bruijn words of the orders 2 to 6. A word of "
 		"order n has 2^n bits and starts with n zero bits. Every value of n bits is in "
 		"the word once, also across the end of the word. A word is hexadecimal digits "
-		"at the width of its order, such as 0x09af for order 4. The word 0x3 of order "
-		"2 is the root of a tree. A word of order n from 2 to 5 has a child of order "
-		"n+1 for each mask: 2, 8, 128 and 32768 children for the orders 2, 3, 4 and 5. "
-		"The address of a word is the masks on the way from the root, such as "
-		"1.7.127.32767. The output is the result alone.\","
+		"at the width of its order, such as 0x09af for order 4. An action also takes a "
+		"rotation of a word, such as 0x9af0 for 0x09af, and reads it as the word; "
+		"windows reads the rotation as given. The word 0x3 of order 2 is the root of a "
+		"tree. A word of order n from 2 to 5 has a child of order n+1 for each mask: 2, "
+		"8, 128 and 32768 children for the orders 2, 3, 4 and 5. The address of a word "
+		"is the masks on the way from the root, such as 1.7.127.32767. The output is "
+		"the result alone.\","
 		"\"inputSchema\":{\"type\":\"object\",\"properties\":{"
 		"\"action\":{\"type\":\"string\",\"enum\":["
 		XL_JOIN(",", ",", DEBRUIJN_PLUGIN_ACTION_LIST(XL_JSON)) "],\"description\":"
@@ -439,7 +464,9 @@ debruijn_plugin_definition (void const *service)
 		"digits, with or without 0x.\"},"
 		"\"order\":{\"type\":\"integer\",\"minimum\":2,\"maximum\":6,\"description\":"
 		"\"The order of word: 2 to 5 for expand and children, 3 to 6 for collapse and "
-		"address, 2 to 6 for windows, rank, unrank and ordered.\"},"
+		"address, 2 to 6 for windows, rank, unrank and ordered. With word, order is "
+		"optional: a word of order n in any rotation is 2^n - n to 2^n bits wide, and "
+		"the bit width of word gives the order.\"},"
 		"\"mask\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"For expand: "
 		"at most 1, 7, 127 and 32767 for the orders 2, 3, 4 and 5.\"},"
 		"\"address\":{\"type\":\"string\",\"description\":\"For path or rank: 1 to 4 masks "
@@ -492,6 +519,7 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 	                     ? A(ADDRESS) : debruijn_plugin_needs[action];
 	bool const sequence = action == DEBRUIJN_PLUGIN_CHILDREN || action == DEBRUIJN_PLUGIN_ORDERED;
 	uint32_t const takes = needs | A(ACTION) | A(OFFSET) |
+	                       (needs & A(WORD) ? A(ORDER) : 0) |
 	                       (sequence ? A(FIRST) | A(LIMIT) : 0);
 	uint32_t const wrong = (needs & ~(uint32_t)seen) | ((uint32_t)seen & ~takes);
 	if (wrong) {
@@ -503,6 +531,7 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 		return;
 	}
 	uint64_t word = 0;
+	uint64_t normal = 0;
 	uint64_t order = 0;
 	uint64_t mask = 0;
 	uint64_t first = 0;
@@ -513,19 +542,37 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 	                   ? DEBRUIJN_MIN_ORDER + 1 : DEBRUIJN_MIN_ORDER;
 	unsigned const high = action == DEBRUIJN_PLUGIN_EXPAND || action == DEBRUIJN_PLUGIN_CHILDREN
 	                    ? DEBRUIJN_MAX_ORDER - 1 : DEBRUIJN_MAX_ORDER;
-	struct cstr_view const digits = jb_view(of[DEBRUIJN_PLUGIN_ARG_WORD]);
-	if ((needs & A(WORD)) && debruijn_plugin_hex(digits, &word)) {
-		mcp_slot_tell(slot, CSTR_VIEW("The word argument must be a string of 1 to 16 "
-		                              "hexadecimal digits, with or without 0x."),
-		              TOOL_FAILED);
-		return;
-	}
-	if ((needs & A(ORDER)) && (jb_uint_checked(of[DEBRUIJN_PLUGIN_ARG_ORDER], high, &order) ||
-	                           order < low)) {
+	bool const given = seen & A(ORDER);
+	if (given && (jb_uint_checked(of[DEBRUIJN_PLUGIN_ARG_ORDER], high, &order) ||
+	              order < low)) {
 		mcp_slot_tellf(slot, TOOL_FAILED, "The order argument must be a whole number from "
 		               "%u to %u for %s.", low, high,
 		               debruijn_plugin_action_names[action].data);
 		return;
+	}
+	if (needs & A(WORD)) {
+		if (debruijn_plugin_hex(jb_view(of[DEBRUIJN_PLUGIN_ARG_WORD]), &word)) {
+			mcp_slot_tell(slot, CSTR_VIEW("The word argument must be a string of 1 to 16 "
+			                              "hexadecimal digits, with or without 0x."),
+			              TOOL_FAILED);
+			return;
+		}
+		/* The library reads a word whose first order bits are zero: normal
+		 * is word in that rotation. */
+		if (!given)
+			order = debruijn_plugin_order(word);
+		normal = word;
+		if (!order || debruijn_normalize(&normal, (unsigned)order)) {
+			debruijn_plugin_no_word(slot, word, (unsigned)order);
+			return;
+		}
+		if (!given && (order < low || order > high)) {
+			mcp_slot_tellf(slot, TOOL_FAILED, "0x%0*" PRIx64 " is a word of order %u, and %s "
+			               "takes the orders %u to %u.", debruijn_plugin_digits((unsigned)order),
+			               word, (unsigned)order, debruijn_plugin_action_names[action].data,
+			               low, high);
+			return;
+		}
 	}
 	if ((needs & A(MASK)) && jb_uint_checked(of[DEBRUIJN_PLUGIN_ARG_MASK],
 	                                         debruijn_plugin_masks((unsigned)order), &mask)) {
@@ -558,14 +605,14 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 	struct debruijn_plugin_out out = { .slot = slot };
 	switch ((enum debruijn_plugin_action)action) {
 	case DEBRUIJN_PLUGIN_EXPAND:
-		debruijn_plugin_expand(&out, word, (unsigned)order, (unsigned)mask);
+		debruijn_plugin_expand(&out, normal, (unsigned)order, (unsigned)mask);
 		break;
 	case DEBRUIJN_PLUGIN_COLLAPSE:
-		debruijn_plugin_collapse(&out, word, (unsigned)order);
+		debruijn_plugin_collapse(&out, normal, (unsigned)order);
 		break;
 	case DEBRUIJN_PLUGIN_RANK:
 		if (!(needs & A(ADDRESS))) {
-			debruijn_plugin_rank(&out, word, (unsigned)order);
+			debruijn_plugin_rank(&out, normal, (unsigned)order);
 			break;
 		}
 		[[fallthrough]];
@@ -574,8 +621,8 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 		                             (enum debruijn_plugin_action)action);
 		break;
 	case DEBRUIJN_PLUGIN_ADDRESS:
-		if (debruijn_plugin_locate(&out, word, (unsigned)order))
-			debruijn_plugin_no_word(slot, word, (unsigned)order);
+		if (debruijn_plugin_locate(&out, normal, (unsigned)order))
+			debruijn_plugin_no_word(slot, normal, (unsigned)order);
 		else
 			debruijn_plugin_end(&out);
 		break;
@@ -586,7 +633,7 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 		debruijn_plugin_end(&out);
 		break;
 	case DEBRUIJN_PLUGIN_CHILDREN:
-		debruijn_plugin_children(&out, word, (unsigned)order, first, limit);
+		debruijn_plugin_children(&out, normal, (unsigned)order, first, limit);
 		break;
 	case DEBRUIJN_PLUGIN_WINDOWS:
 		debruijn_plugin_windows(&out, word, (unsigned)order);

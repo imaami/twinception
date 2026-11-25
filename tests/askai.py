@@ -20070,6 +20070,31 @@ def check_debruijn(binary, up, debruijn):
             values = ok(ai, action="windows", word="0x0218a392cd3d5dbf", order=6).split()
             assert sorted(map(int, values)) == list(range(64)), values
 
+            # Without order, the bit width of the word gives the order. An
+            # action reads a rotation of a word as the word, and windows
+            # reads the rotation as given.
+            def rotations(word, order):
+                bits, value = 1 << order, int(word, 16)
+                return [f"0x{(value << r | value >> (bits - r)) & ((1 << bits) - 1):x}"
+                        for r in range(bits)]
+
+            assert ok(ai, action="expand", word="0x09af", mask=127) == "0x04653adf\n"
+            assert ok(ai, action="children", word="3") == "0x1d\n0x17\n"
+            assert ok(ai, action="rank", word="0x021d16a7b37e4ae3") == "1234567\n"
+            for x in rotations("0218a392cd3d5dbf", 6):
+                assert ok(ai, action="collapse", word=x) == "0x04653adf 32767\n", x
+                assert ok(ai, action="address", word=x, order=6) == "1.7.127.32767\n", x
+            for x in rotations("09af", 4):
+                assert ok(ai, action="expand", word=x, mask=127) == "0x04653adf\n", x
+                assert ok(ai, action="collapse", word=x, order=4) == "0x17 7\n", x
+            base = "0 1 2 5 3 7 6 4".split()
+            for r, x in enumerate(rotations("17", 3)):
+                assert ok(ai, action="children", word=x, first=6) == "0x0d2f\n0x09af\n", x
+                assert ok(ai, action="rank", word=x) == "0\n", x
+                assert ok(ai, action="windows", word=x).split() == base[r:] + base[:r], x
+            for x in rotations("3", 2):
+                assert ok(ai, action="expand", word=x, mask=1) == "0x17\n", x
+
             # Independent order-4 oracle: old mask-order traversal, sorted by word.
             pairs = []
             for m, parent in enumerate(ok(ai, action="children", word="3", order=2).split()):
@@ -20112,6 +20137,20 @@ def check_debruijn(binary, up, debruijn):
                     ({"action": "children", "word": "0x1e", "order": 3}, no_word),
                     ({"action": "windows", "word": "0x1e", "order": 3}, no_word),
                     ({"action": "rank", "word": "0x1e", "order": 3}, no_word),
+                    ({"action": "collapse", "word": "0x1e"}, no_word),
+                    ({"action": "collapse", "word": "0x17", "order": 4},
+                     "0x0017 is no word of order 4."),
+                    ({"action": "windows", "word": "0x1fffff"},
+                     "0x1fffff is no word of any order from 2 to 6."),
+                    ({"action": "rank", "word": "0"}, "0x0 is no word of any order from 2 to 6."),
+                    ({"action": "expand", "word": "0x0218a392cd3d5dbf", "mask": 0},
+                     "0x0218a392cd3d5dbf is a word of order 6, and expand takes the orders "
+                     "2 to 5."),
+                    ({"action": "collapse", "word": "0x9"},
+                     "0x9 is a word of order 2, and collapse takes the orders 3 to 6."),
+                    ({"action": "expand", "word": "0x17", "mask": 8},
+                     "The mask argument must be a whole number from 0 to 7 for order 3."),
+                    ({"action": "ordered"}, "ordered needs the argument order."),
                     ({"action": "rank", "address": "1.8"}, None),
                     ({"action": "rank", "address": "1", "order": 3}, "rank takes no argument order."),
                     ({"action": "unrank", "order": 2, "rank": 1},
@@ -20165,8 +20204,9 @@ def check_debruijn(binary, up, debruijn):
                 got = refused(ai, **arguments)
                 assert got == text if text else got.startswith("The address argument"), \
                     (arguments, got)
-    print("debruijn: mask tree, windows, numeric rank, unrank and ordered pages; "
-          "refused words, orders, ranks, masks, addresses and arguments: PASS")
+    print("debruijn: mask tree, windows, numeric rank, unrank and ordered pages; the "
+          "order from the width, rotated words; refused words, orders, ranks, masks, "
+          "addresses and arguments: PASS")
 
 
 def check_godbolt(binary, up, godbolt):
