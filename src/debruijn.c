@@ -167,6 +167,67 @@ debruijn_valid (uint64_t word,
 	return !tree(word, order).error;
 }
 
+/** Test a bit of a bitmap and set it; return whether it was set before. */
+static force_inline bool
+seen (uint64_t *map,
+      unsigned  pos)
+{
+	uint64_t bit = UINT64_C(1) << pos;
+	if (*map & bit)
+		return true;
+	*map |= bit;
+	return false;
+}
+
+/**
+ * Mark num windows of seq in map, from the least significant bit on, each
+ * window the bits of seq under the mask window. Return the map, or zero if a
+ * window is in it already. num must be at least 1.
+ */
+static force_inline uint64_t
+windows (uint64_t seq,
+         uint64_t map,
+         uint64_t window,
+         unsigned num)
+{
+	for (; !seen(&map, (unsigned)(seq & window)); seq >>= 1U) {
+		if (!--num)
+			return map;
+	}
+	return 0;
+}
+
+int
+debruijn_normalize (uint64_t *word,
+                    unsigned  order)
+{
+	if (!word)
+		return EFAULT;
+	if (order < DEBRUIJN_MIN_ORDER || order > DEBRUIJN_MAX_ORDER)
+		return EINVAL;
+
+	unsigned length = 1U << order;
+	uint64_t mask = UINT64_MAX >> (64 - length);
+	uint64_t seq = *word;
+	if (seq & ~mask)
+		return EINVAL;
+
+	/* First the windows that start at the length - order + 1 lowest places,
+	 * then in a rotation the order - 1 that run over the end of the word. */
+	uint64_t window = (UINT64_C(1) << order) - 1U;
+	uint64_t over = ((seq << (order - 1U)) | (seq >> (length - order + 1U))) & mask;
+	uint64_t map = windows(seq, 0, window, length - order + 1U);
+	if (!map || !windows(over, map, window, order - 1U))
+		return EINVAL;
+
+	/* Every value is in exactly one window, zero too, so exactly one rotation
+	 * starts with order zero bits. Rotate the word to it. */
+	while (seq >> (length - order))
+		seq = ((seq << 1U) & mask) | (seq >> (length - 1U));
+	*word = seq;
+	return 0;
+}
+
 struct debruijn_generator
 debruijn_generator (uint64_t seed,
                     unsigned order)

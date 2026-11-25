@@ -45,6 +45,19 @@ debruijn_valid (uint64_t word,
                 unsigned order);
 
 /**
+ * Rotate a binary de Bruijn word of the given order to its normalized form.
+ *
+ * The word may be any rotation within its 2^order-bit width. Store the
+ * rotation whose first 'order' bits are zero and return 0, or return EFAULT
+ * for a null pointer or EINVAL for an invalid order or a word that is no
+ * rotation of a word of this order. Leave *word unchanged on failure.
+ * errno is not changed.
+ */
+extern int
+debruijn_normalize (uint64_t *word,
+                    unsigned  order);
+
+/**
  * Construct an order-(order + 1) word from an order-'order' seed.
  *
  * order must be 2..5. There are 2^(order - 1) - 1 independent choice bits;
