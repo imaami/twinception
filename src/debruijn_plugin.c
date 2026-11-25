@@ -239,9 +239,11 @@ debruijn_plugin_address (struct cstr_view  text,
 static unsigned
 debruijn_plugin_order (uint64_t word)
 {
-	unsigned const w = stdc_bit_width(word);
-	return (w > 32U) + (w > 16U) + (w > 8U)
-	     + (w >  4U) + (w >  1U) * 2U;
+	return stdc_bit_width(
+		stdc_bit_width(word)
+		- (word >= 1U << 2U)
+		- (word == 1U << 1U)
+	);
 }
 
 /* Refuses a word that is no rotation of a word of the order @p order, or of
