@@ -33,4 +33,16 @@ cli_render_row (struct dstr *cache,
                 size_t       row,
                 size_t       column);
 
+/**
+ * Make the text at output[begin:], terminal-safe UTF-8 with complete SGR
+ * sequences, @p cells cells wide: cut it before its first character that
+ * does not fit, and pad it with spaces. Sets *width to the number of cells
+ * of the text before the spaces. Returns 0, EINVAL, EILSEQ or ENOMEM.
+ */
+extern int
+cli_render_fit (struct dstr *output,
+                size_t       begin,
+                size_t       cells,
+                size_t      *width);
+
 #endif /* ASKAI_SRC_CLI_RENDER_H_ */

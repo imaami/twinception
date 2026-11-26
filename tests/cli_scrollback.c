@@ -1,6 +1,7 @@
 /** @file Transcript bounds, wrapping and viewport stability. */
 #include <assert.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -87,6 +88,53 @@ cli_scrollback_test_characters (void)
 		assert(cli_render_character(cases[i].text, &width) == cases[i].bytes);
 		assert(width == cases[i].width);
 	}
+}
+
+/* A row is cut before its first character that does not fit, after the SGR
+ * sequences and combining marks that end the cells that fit, and padded to
+ * its width. The text before the row stays.
+ */
+static void
+cli_scrollback_test_fit (void)
+{
+	struct {
+		struct cstr_view text;
+		struct cstr_view fit;
+		size_t           cells;
+		size_t           width;
+	} const cases[] = {
+		{CSTR_VIEW("ab"), CSTR_VIEW("ab   "), 5, 2},
+		{CSTR_VIEW("abcdef"), CSTR_VIEW("abc"), 3, 3},
+		{CSTR_VIEW("\033[0;38;5;110m[ \033[0;38;5;245m12\033[0;38;5;110m ]"),
+		 CSTR_VIEW("\033[0;38;5;110m[ \033[0;38;5;245m1"), 3, 3},
+		{CSTR_VIEW("ab\033[0mcd"), CSTR_VIEW("ab\033[0m"), 2, 2},
+		{CSTR_VIEW("a界b"), CSTR_VIEW("a "), 2, 1},
+		{CSTR_VIEW("e\u0301x"), CSTR_VIEW("e\u0301"), 1, 1},
+		{CSTR_VIEW("abc"), CSTR_VIEW(""), 0, 0},
+	};
+	dstr_auto output = dstr(nullptr);
+	for (size_t i = 0; i < array_size(cases); ++i) {
+		size_t width = SIZE_MAX;
+		dstr_clear(&output);
+		assert(dstr_cat(&output, "> ") && dstr_cat_n(&output, cases[i].text.data, cases[i].text.len));
+		assert(!cli_render_fit(&output, 2, cases[i].cells, &width));
+		assert(width == cases[i].width);
+		assert(cstr_view_starts(cstr_view_dstr(&output), CSTR_VIEW("> ")));
+		assert(cstr_view_equal(cstr_view_slice(cstr_view_dstr(&output), 2, SIZE_MAX), cases[i].fit));
+	}
+	size_t width = 7;
+	assert(cli_render_fit(nullptr, 0, 1, &width) == EINVAL);
+	assert(cli_render_fit(&output, 0, 1, nullptr) == EINVAL);
+	assert(cli_render_fit(&output, dstr_len(&output) + 1, 1, &width) == EINVAL);
+	assert(cli_render_fit(&output, 0, (size_t)INT_MAX + 1, &width) == EINVAL);
+	struct cstr_view const invalid[] = {CSTR_VIEW("ab\n"), CSTR_VIEW("a\033[0")};
+	for (size_t i = 0; i < array_size(invalid); ++i) {
+		dstr_clear(&output);
+		assert(dstr_cat_n(&output, invalid[i].data, invalid[i].len));
+		assert(cli_render_fit(&output, 0, 5, &width) == EILSEQ);
+		assert(cstr_view_equal(cstr_view_dstr(&output), invalid[i]));
+	}
+	assert(width == 7);
 }
 
 static void
@@ -405,6 +453,7 @@ int
 main (void)
 {
 	cli_scrollback_test_characters();
+	cli_scrollback_test_fit();
 	cli_scrollback_test_wrapping();
 	cli_scrollback_test_styles();
 	cli_scrollback_test_pane();
@@ -414,7 +463,7 @@ main (void)
 	cli_scrollback_test_viewport();
 	cli_scrollback_test_long_line();
 	cli_scrollback_test_prefix_eviction();
-	puts("cli scrollback: UTF-8 wrapping, viewport, bounds and streaming redraw: PASS");
+	puts("cli scrollback: UTF-8 wrapping, fitted rows, viewport, bounds and streaming redraw: PASS");
 	return 0;
 }
 

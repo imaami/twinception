@@ -129,3 +129,27 @@ cli_render_row (struct dstr *cache, struct dstr *output,
 	}
 	return 0;
 }
+
+int
+cli_render_fit (struct dstr *output, size_t begin, size_t cells, size_t *width)
+{
+	if (!output || !width || begin > dstr_len(output) || cells > INT_MAX)
+		return EINVAL;
+	struct cstr_view const text = cstr_view_slice(cstr_view_dstr(output), begin, SIZE_MAX);
+	size_t end = 0, used = 0;
+	while (end < text.len) {
+		int cell;
+		size_t const length = cli_render_token(cstr_view_slice(text, end, SIZE_MAX), &cell);
+		if (!length)
+			return EILSEQ;
+		/* An SGR sequence is -1 cells wide. */
+		size_t const n = cell > 0 ? (size_t)cell : 0;
+		if (n > cells - used)
+			break;
+		used += n;
+		end += length;
+	}
+	dstr_erase(output, begin + end, SIZE_MAX);
+	*width = used;
+	return dstr_printf(output, "%*s", (int)(cells - used), "") ? 0 : ENOMEM;
+}
