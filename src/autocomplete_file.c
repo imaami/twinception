@@ -93,9 +93,11 @@ autocomplete_file_complete (struct autocomplete_file *const         file,
 		return 0;
 
 	struct cstr_view const prefix = cstr_view_slice(line, command.len, cursor - command.len);
-	char const *const slash = memchr(line.data + cursor, '/', line.len - cursor);
-	struct cstr_view const suffix = slash ? cstr_view_slice(line, (size_t)(slash - line.data) + 1, SIZE_MAX)
-	                                      : cstr_view(nullptr);
+	/* A match goes in place of the path before the cursor, and the text
+	 * after the cursor stays and moves forward, as in bash. A slash follows
+	 * a directory, and a space a file at the end of the line. */
+	struct cstr_view const rest = cstr_view_slice(line, cursor, SIZE_MAX);
+	struct cstr_view const space = cstr_view_n(" ", cursor == line.len);
 	size_t directory_len = prefix.len;
 	while (directory_len && prefix.data[directory_len - 1] != '/')
 		--directory_len;
@@ -105,7 +107,7 @@ autocomplete_file_complete (struct autocomplete_file *const         file,
 	size_t const base = command.len + directory.len;
 	autocomplete_matches_clear(&file->found);
 	if (cstr_view_equal(prefix, CSTR_VIEW("~"))) {
-		struct cstr_view const parts[] = { command, prefix, CSTR_VIEW("/"), suffix };
+		struct cstr_view const parts[] = { command, prefix, CSTR_VIEW("/"), rest };
 		int const e = autocomplete_matches_add(&file->found, parts, array_size(parts),
 		                                       base + prefix.len + 1, base, AUTOCOMPLETE_FILE);
 		if (!e)
@@ -131,12 +133,9 @@ autocomplete_file_complete (struct autocomplete_file *const         file,
 			struct stat info;
 			is_directory = !fstatat(dirfd(dir), entry->d_name, &info, 0) && S_ISDIR(info.st_mode);
 		}
-		if (slash && !is_directory)
-			continue;
-		struct cstr_view const parts[] = {
-			command, directory, name, is_directory ? CSTR_VIEW("/") : CSTR_VIEW(" "), suffix,
-		};
-		e = autocomplete_matches_add(&file->found, parts, array_size(parts), base + name.len + 1,
+		struct cstr_view const after = is_directory ? CSTR_VIEW("/") : space;
+		struct cstr_view const parts[] = { command, directory, name, after, rest };
+		e = autocomplete_matches_add(&file->found, parts, array_size(parts), base + name.len + after.len,
 		                             base, AUTOCOMPLETE_FILE);
 		if (e)
 			break;

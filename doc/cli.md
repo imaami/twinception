@@ -160,7 +160,11 @@ and files have separate palette styles. Every listing requires a fresh pair
 of Tab presses within 400 ms; repeated single Tabs do not repeatedly print
 the choices. A unique completed word gets one separating space, with the
 cursor ready for the next word. The second Tab of that pair leaves it there.
-Directory completion ends with `/` so the path can continue.
+With the cursor inside a word, the completion goes in at the cursor and
+pushes the rest of the word forward, as in bash, without a space. With more
+than one choice, Tab adds only what the choices have in common, and nothing
+after the cursor changes. Directory completion ends with `/` so the path can
+continue.
 
 Ctrl-C cancels the foreground operation without discarding the draft being
 edited or cancelling independent manual tools. When only manual tools are

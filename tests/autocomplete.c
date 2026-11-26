@@ -115,7 +115,7 @@ static void autocomplete_labels (struct autocomplete *catalog)
 		{CSTR_VIEW_INIT("ää @al"), CSTR_VIEW_INIT("ää @alice "), CSTR_VIEW_INIT("@alice"), 8, AUTOCOMPLETE_NAME, 5},
 		{CSTR_VIEW_INIT("/tool git member=al"), CSTR_VIEW_INIT("/tool git member=alice "), CSTR_VIEW_INIT("alice"), 19, AUTOCOMPLETE_NAME, 17},
 		{CSTR_VIEW_INIT("/tool notes file=des"), CSTR_VIEW_INIT("/tool notes file='design docs/first.md' "), CSTR_VIEW_INIT("'design docs/first.md'"), 20, AUTOCOMPLETE_FILE, 17},
-		{CSTR_VIEW_INIT("/tool git command=stale count=2"), CSTR_VIEW_INIT("/tool git command=status count=2"), CSTR_VIEW_INIT("status"), 20, AUTOCOMPLETE_VALUE, 18},
+		{CSTR_VIEW_INIT("/tool git command=stale count=2"), CSTR_VIEW_INIT("/tool git command=statusale count=2"), CSTR_VIEW_INIT("status"), 20, AUTOCOMPLETE_VALUE, 18},
 	};
 	for (size_t i = 0; i < array_size(cases); ++i) {
 		struct autocomplete_match const *matches = nullptr;
@@ -277,9 +277,18 @@ static void autocomplete_files(void)
 	length = snprintf(complete, sizeof complete, "/read %s/normal ", directory);
 	assert(length > 0 && length < (int)sizeof complete);
 	struct cstr_view completed = cstr_view_n(complete, (size_t)length);
+	/* The text after the cursor stays, and the match goes before it. */
 	assert(!autocomplete_file_complete(files, completed, completed.len - 1, command, &matches, &count));
 	assert(count == 1 && cstr_view_equal(matches[0].line, completed));
-	assert(matches[0].cursor == completed.len);
+	assert(matches[0].cursor == completed.len - 1);
+	char pushed[sizeof directory + sizeof("/read /folder/normal ")];
+	length = snprintf(pushed, sizeof pushed, "/read %s/folder/normal ", directory);
+	assert(length > 0 && length < (int)sizeof pushed);
+	size_t const before = (size_t)length - sizeof "normal";
+	assert(!autocomplete_file_complete(files, completed, input.len, command, &matches, &count));
+	assert(count == array_size(expected));
+	assert(cstr_view_equal(matches[1].line, cstr_view_n(pushed, (size_t)length)));
+	assert(matches[1].cursor == before);
 	for (size_t i = 0; i < array_size(names); ++i)
 		assert(!unlinkat(fd, names[i], 0));
 	assert(!unlinkat(fd, "dangling", 0));
@@ -558,7 +567,10 @@ int main(void)
 	AT("hello @al, next", "hello @alice, next", 9);
 	AT("al: hi", "alice: hi", 2);
 	HAS("ä", "äiti:");
-	AT("/tool git command=stale count=2", "/tool git command=status count=2", 20);
+	AT("/tool git command=stale count=2", "/tool git command=statusale count=2", 20);
+	AT("/tool git command=log", "/tool git command=loglog", 18);
+	AT("/tool gi x=1", "/tool git x=1", 8);
+	AT("/tool gi x=1", "/tool gitgi x=1", 6);
 	EMPTY("/tool absent ");
 	EMPTY("/tool git recipient=");
 	EMPTY("/tool git command=log com");

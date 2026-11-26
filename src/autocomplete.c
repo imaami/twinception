@@ -919,20 +919,26 @@ autocomplete_list_at (struct autocomplete const *ac,
 	                                                 : CSTR_VIEW("");
 }
 
+/* Add the match of @p value in place of the text of @p line from @p begin to
+ * @p cursor. The text after the cursor stays and moves forward, as in bash.
+ * With @p separate, and only with the cursor at @p end, the end of the
+ * token, a space follows the value, in place of a space after the token.
+ */
 static int
 autocomplete_replacement (struct autocomplete    *ac,
                           struct cstr_view        line,
                           size_t                  begin,
+                          size_t                  cursor,
                           size_t                  end,
                           struct cstr_view        value,
                           bool                    separate,
                           enum autocomplete_kind  kind)
 {
-	if (separate && end < line.len && cstr_view_space(line.data[end]))
-		++end;
+	separate = separate && cursor == end;
+	size_t const rest = cursor + (separate && cursor < line.len && cstr_view_space(line.data[cursor]));
 	struct cstr_view const parts[] = {
 		cstr_view_slice(line, 0, begin), value, cstr_view_n(" ", separate),
-		cstr_view_slice(line, end, SIZE_MAX),
+		cstr_view_slice(line, rest, SIZE_MAX),
 	};
 	return autocomplete_matches_add(&ac->found, parts, array_size(parts), begin + value.len + separate,
 	                                begin, kind);
@@ -942,6 +948,7 @@ static int
 autocomplete_value_match (struct autocomplete      *ac,
                           struct cstr_view          line,
                           struct autocomplete_token current,
+                          size_t                    cursor,
                           struct cstr_view          prefix,
                           struct cstr_view          value,
                           uint64_t                  flags,
@@ -956,7 +963,7 @@ autocomplete_value_match (struct autocomplete      *ac,
 			return error == E2BIG ? 0 : error;
 		value = cstr_view_dstr(&ac->quoted);
 	}
-	return autocomplete_replacement(ac, line, current.equals + 1, current.end, value, true, kind);
+	return autocomplete_replacement(ac, line, current.equals + 1, cursor, current.end, value, true, kind);
 }
 
 static int
@@ -1031,7 +1038,7 @@ autocomplete_values (struct autocomplete                *ac,
 		struct autocomplete_candidate const *candidate = &property->values[i];
 		if (!flag_any(candidate->flags, AUTOCOMPLETE_VALID))
 			continue;
-		error = autocomplete_value_match(ac, line, current, prefix, cstr_view_dstr(&candidate->value),
+		error = autocomplete_value_match(ac, line, current, cursor, prefix, cstr_view_dstr(&candidate->value),
 		                                 candidate->flags.bits, mark, AUTOCOMPLETE_VALUE);
 		if (error)
 			return error;
@@ -1049,7 +1056,8 @@ autocomplete_values (struct autocomplete                *ac,
 	for (size_t i = 0; i < array_size(literals); ++i) {
 		if (!(open & literals[i].type))
 			continue;
-		error = autocomplete_value_match(ac, line, current, prefix, literals[i].word, 0, mark, AUTOCOMPLETE_VALUE);
+		error = autocomplete_value_match(ac, line, current, cursor, prefix, literals[i].word, 0, mark,
+		                                 AUTOCOMPLETE_VALUE);
 		if (error)
 			return error;
 	}
@@ -1073,7 +1081,8 @@ autocomplete_values (struct autocomplete                *ac,
 	}
 	flags = AUTOCOMPLETE_STRING | (flags & AUTOCOMPLETE_STRING ? 0 : AUTOCOMPLETE_QUOTED);
 	for (size_t i = 0; names && i < names->n; ++i) {
-		error = autocomplete_value_match(ac, line, current, prefix, cstr_view_dstr(&names->items[i]), flags, mark, kind);
+		error = autocomplete_value_match(ac, line, current, cursor, prefix, cstr_view_dstr(&names->items[i]),
+		                                 flags, mark, kind);
 		if (error)
 			return error;
 	}
@@ -1095,18 +1104,21 @@ autocomplete_used (struct autocomplete const *ac,
 	return false;
 }
 
-/* Offer the tools whose names start with prefix, in place of current. */
+/* Offer the tools whose names start with prefix, the text of current
+ * before the cursor. */
 static int
 autocomplete_tool_names (struct autocomplete      *ac,
                          struct cstr_view          line,
                          struct autocomplete_token current,
                          struct cstr_view          prefix)
 {
+	size_t const cursor = current.begin + prefix.len;
 	int error = 0;
 	for (size_t i = 0; !error && i < ac->entries.n; ++i) {
 		struct cstr_view name = ac->entries.items[i].tool.name;
 		error = cstr_view_starts(name, prefix)
-		      ? autocomplete_replacement(ac, line, current.begin, current.end, name, true, AUTOCOMPLETE_TOOL) : 0;
+		      ? autocomplete_replacement(ac, line, current.begin, cursor, current.end, name, true,
+		                                 AUTOCOMPLETE_TOOL) : 0;
 	}
 	return error;
 }
@@ -1123,8 +1135,8 @@ autocomplete_commands (struct autocomplete      *ac,
 	if (!index) {
 		struct cli_command_matches commands = cli_command_prefix(prefix);
 		for (size_t i = 0; !error && i < commands.count; ++i)
-			error = autocomplete_replacement(ac, line, current.begin, current.end, commands.data[i].name, true,
-			                                 AUTOCOMPLETE_COMMAND);
+			error = autocomplete_replacement(ac, line, current.begin, cursor, current.end,
+			                                 commands.data[i].name, true, AUTOCOMPLETE_COMMAND);
 		return error;
 	}
 	if (!ac->tokens.n)
@@ -1156,8 +1168,8 @@ autocomplete_commands (struct autocomplete      *ac,
 			return error;
 		if (current.equals == SIZE_MAX && !dstr_cat_n(&ac->quoted, "=", 1))
 			return ENOMEM;
-		error = autocomplete_replacement(ac, line, current.begin, current.equals == SIZE_MAX ? current.end : current.equals,
-		                                 cstr_view_dstr(&ac->quoted), false, AUTOCOMPLETE_PARAMETER);
+		error = autocomplete_replacement(ac, line, current.begin, cursor, current.end, cstr_view_dstr(&ac->quoted),
+		                                 false, AUTOCOMPLETE_PARAMETER);
 		if (error)
 			return error;
 	}
@@ -1181,7 +1193,7 @@ autocomplete_mentions (struct autocomplete *ac,
 		return 0;
 	bool mention = line.data[begin] == '@';
 	struct cstr_view prefix = cstr_view_slice(line, begin + mention, cursor - begin - mention);
-	bool separate = end == line.len || cstr_view_space(line.data[end]);
+	bool separate = end == cursor && (end == line.len || cstr_view_space(line.data[end]));
 	struct autocomplete_names const *names = &ac->lists[AUTOCOMPLETE_AGENTS];
 	for (size_t i = 0; i < names->n; ++i) {
 		struct cstr_view name = cstr_view_dstr(&names->items[i]);
@@ -1194,7 +1206,8 @@ autocomplete_mentions (struct autocomplete *ac,
 			return ENOMEM;
 		if (!mention && !begin && separate && !dstr_cat_n(&ac->quoted, ":", 1))
 			return ENOMEM;
-		int error = autocomplete_replacement(ac, line, begin, end, cstr_view_dstr(&ac->quoted), separate, AUTOCOMPLETE_NAME);
+		int error = autocomplete_replacement(ac, line, begin, cursor, end, cstr_view_dstr(&ac->quoted), separate,
+		                                     AUTOCOMPLETE_NAME);
 		if (error)
 			return error;
 	}

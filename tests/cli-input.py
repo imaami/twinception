@@ -190,8 +190,10 @@ def check_editing(binary):
         (console.root / "documents").mkdir()
         console.line(b"/read doc\tchild\r", "/read documents/child\n")
         (console.root / "story.txt").write_text("fixture")
-        console.line(b"/read stale.txt" + LEFT * 7 + b"\t\r", "/read story.txt \n")
-        console.line(b"/read docstale/child" + LEFT * 11 + b"\t\r", "/read documents/child\n")
+        # A match goes in at the cursor and pushes the rest of the path
+        # forward, as in bash.
+        console.line(b"/read stale.txt" + LEFT * 7 + b"\t\r", "/read story.txtale.txt\n")
+        console.line(b"/read docstale/child" + LEFT * 11 + b"\t\r", "/read documents/stale/child\n")
         console.finish()
     print("cli input editing: UTF-8, wrapping/resize, word erase and Tab: PASS")
 
@@ -252,10 +254,11 @@ def check_catalog(binary):
         console.line(b"hello @al, next" + LEFT * 6 + b"\t\r", "hello @alice, next\n")
         console.line(b"al: hi" + LEFT * 4 + b"\t\r", "alice: hi\n")
         console.line("ä\t".encode() + b"hello\r", "äiti: hello\n")
-        # Completing within a token replaces its stale tail, preserving later
-        # arguments. Readline must honor both candidate text and cursor.
+        # Completing within a token puts the match in at the cursor and
+        # pushes the rest of the token forward, as in bash. Readline must
+        # honor both candidate text and cursor.
         original = b"/tool git command=stale count=2"
-        console.line(original + LEFT * 10 + b"\t\r", "/tool git command=status count=2\n")
+        console.line(original + LEFT * 10 + b"\t\r", "/tool git command=statusle count=2\n")
         console.line(original + LEFT * 10 + b"\t\x1f\r", original.decode() + "\n")
         # More than one match puts their common prefix in place of the text
         # before the cursor, and the text after it stays, a value too.
