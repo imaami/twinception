@@ -1736,7 +1736,9 @@ git_call_create (struct json_object *args,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	*call = (struct git_call){};
+	*call = (struct git_call){
+		.made = DSTR_INIT,
+	};
 	git_pin_init(&call->pin, git, jb_text(jb_get(args, "repo"), 1, WORD, nullptr), deadline);
 	/* The call reads its arguments after it parks (tool.h). */
 	if (args && json_object_deep_copy(args, &call->args, nullptr)) {
