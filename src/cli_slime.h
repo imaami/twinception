@@ -103,4 +103,18 @@ cli_slime_tick (struct cli_slime *slime,
 extern void
 cli_slime_blank (struct cli_slime *slime);
 
+/**
+ * Move the slime to a track of @p cols cells from screen column @p x0, as
+ * on a resized terminal: the tail goes to the same share of the way that
+ * the body can travel between the walls. The cells of the new track are
+ * blank on the screen, so the next frame draws all of the slime, which has
+ * no trail then. Returns EINVAL, and changes nothing, if @p slime is not a
+ * slime that cli_slime() made, if @p cols is below CLI_SLIME_MIN_COLS, or
+ * if @p x0 + @p cols is above CLI_SLIME_MAX_COLS. Returns 0 otherwise.
+ */
+extern int
+cli_slime_move (struct cli_slime *slime,
+                uint32_t          x0,
+                uint32_t          cols);
+
 #endif /* TWINCEPTION_SRC_CLI_SLIME_H_ */

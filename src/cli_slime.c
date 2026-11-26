@@ -312,6 +312,29 @@ cli_slime_blank (struct cli_slime *slime)
 	memset(slime->shown, 0, sizeof slime->shown);
 }
 
+int
+cli_slime_move (struct cli_slime *slime,
+                uint32_t          x0,
+                uint32_t          cols)
+{
+	if (!slime || slime->cols < CLI_SLIME_MIN_COLS || slime->cols > CLI_SLIME_MAX_COLS ||
+	    slime->len >= slime->cols * 8 || cols < CLI_SLIME_MIN_COLS || cols > CLI_SLIME_MAX_COLS ||
+	    x0 > CLI_SLIME_MAX_COLS - cols)
+		return EINVAL;
+	/* The tail can travel from the wall that it left to the length of the
+	 * body before the far wall. It moves to the same share of that way on
+	 * the new track. */
+	uint64_t const way = slime->cols * 8 - slime->len;
+	slime->back = (uint32_t)(slime->back * (uint64_t)(cols * 8 - slime->len) / way);
+	slime->x0 = x0;
+	slime->cols = cols;
+	slime->first = UINT32_MAX;
+	slime->end = 0;
+	memset(slime->age, 0, sizeof slime->age);
+	memset(slime->shown, 0, sizeof slime->shown);
+	return 0;
+}
+
 #undef WINDOW
 #undef LONGEST
 #undef TRAIL

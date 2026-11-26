@@ -142,6 +142,85 @@ cli_slime_test_edge (void)
 	}
 }
 
+/* Crawl @p slime until @p done returns true, at most 100000 frames, and
+ * apply the frames to @p line. */
+static void
+cli_slime_test_crawl (struct cli_slime           *slime,
+                      struct cli_slime_test_line *line,
+                      bool                      (*done) (struct cli_slime const *slime))
+{
+	for (uint32_t k = 0; !done(slime); ++k) {
+		assert(k < 100000);
+		char buf[CLI_SLIME_FRAME_MAX];
+		cli_slime_test_apply(line, buf, cli_slime_tick(slime, slime->due, buf));
+	}
+}
+
+static bool
+cli_slime_test_back_half (struct cli_slime const *slime)
+{
+	return slime->rev && slime->phase == CLI_SLIME_STRETCH && slime->back > slime->cols * 3;
+}
+
+static bool
+cli_slime_test_squashed (struct cli_slime const *slime)
+{
+	return slime->phase == CLI_SLIME_SQUASH;
+}
+
+/* The direction and the shape of a moved slime do not change, and its tail
+ * is at the same share of the way between the walls, to an eighth of a
+ * cell. On the blank track it draws all of its body at once, and in
+ * thousands of frames after that, no cell past the track. Against a wall,
+ * it stays there. A track that does not fit, or a slime that cli_slime()
+ * did not make, changes nothing. */
+static void
+cli_slime_test_move (void)
+{
+	int e;
+	struct cli_slime slime = cli_slime(4, 80, 3, true, &e);
+	assert(!e);
+	struct cli_slime const fresh = slime;
+	struct cli_slime none = {};
+	assert(cli_slime_move(&slime, 0, CLI_SLIME_MIN_COLS - 1) == EINVAL);
+	assert(cli_slime_move(&slime, CLI_SLIME_MAX_COLS - 11, CLI_SLIME_MIN_COLS) == EINVAL);
+	assert(cli_slime_move(nullptr, 0, 40) == EINVAL);
+	assert(cli_slime_move(&none, 0, 40) == EINVAL);
+	assert(!memcmp(&slime, &fresh, sizeof slime));
+
+	struct cli_slime_test_line line = {.base = 4};
+	cli_slime_test_crawl(&slime, &line, cli_slime_test_back_half);
+	static uint32_t const widths[] = {30, 200, CLI_SLIME_MIN_COLS, 80};
+	for (size_t i = 0; i < sizeof widths / sizeof *widths; ++i) {
+		struct cli_slime const old = slime;
+		uint32_t const cols = widths[i];
+		assert(!cli_slime_move(&slime, 2, cols));
+		assert(slime.x0 == 2 && slime.cols == cols && slime.len == old.len &&
+		       slime.rev == old.rev && slime.phase == old.phase && slime.due == old.due &&
+		       slime.lmax == old.lmax && slime.rng == old.rng);
+		uint64_t const before = (uint64_t)old.back * (cols * 8 - old.len);
+		uint64_t const after = (uint64_t)slime.back * (old.cols * 8 - old.len);
+		assert(after <= before && before - after < old.cols * 8 - old.len);
+		struct cli_slime_test_line moved = {.base = 2};
+		char buf[CLI_SLIME_FRAME_MAX];
+		cli_slime_test_apply(&moved, buf, cli_slime_tick(&slime, slime.due, buf));
+		uint32_t drawn = 0;
+		for (uint32_t c = 0; c < cols; ++c)
+			drawn += moved.cell[c] >> 8U;
+		assert(drawn);
+		for (uint32_t k = 0; k < 3000; ++k) {
+			cli_slime_test_apply(&moved, buf, cli_slime_tick(&slime, slime.due, buf));
+			for (uint32_t c = cols; c < 254; ++c)
+				assert(!moved.cell[c]);
+		}
+	}
+
+	struct cli_slime_test_line last = {.base = 2};
+	cli_slime_test_crawl(&slime, &last, cli_slime_test_squashed);
+	assert(!cli_slime_move(&slime, 0, 50));
+	assert(slime.phase == CLI_SLIME_SQUASH && slime.back + slime.len == 50 * 8);
+}
+
 /*
  * Four slimes from one seed: one drawn as usual, one on a line cleared and
  * blanked before each frame, one with its track from column 9, and one
@@ -212,6 +291,7 @@ main (void)
 	cli_slime_test_errors();
 	cli_slime_test_tick();
 	cli_slime_test_edge();
+	cli_slime_test_move();
 	int failed = 0;
 	for (size_t i = 0; i < sizeof runs / sizeof *runs; ++i) {
 		uint64_t const hash = cli_slime_test_frames(runs[i].cols, runs[i].seed, 20'000);
