@@ -29,9 +29,14 @@
  * - ordered: rows as for unrank, from rank first on, at most limit rows.
  *
  * A word, and each mask of an address, is a number as strtoll() and
- * strtoull() read it with the base 0 (debruijn_plugin_number()):
- * hexadecimal after 0x, binary after 0b, octal after 0, else decimal. The
- * words in the output are hexadecimal.
+ * strtoull() read it with the base 0, but without a + sign
+ * (debruijn_plugin_number()): hexadecimal after 0x, binary after 0b, octal
+ * after 0, else decimal. A prefix on the leftmost mask of an address is the
+ * base of all its masks, so 0b1.110.1010101.111110000011111 is binary. A
+ * negative number stands for its two's complement in the bits of the word
+ * or mask: 2^n bits for a word of order n, which then needs the argument
+ * order, and 2^(n-1) - 1 bits for a mask that expands a word of order n.
+ * The words in the output are hexadecimal.
  *
  * An action takes a word in any rotation, and rotates it to start with its
  * n zero bits (debruijn_normalize()) before the library reads it. windows
@@ -43,6 +48,7 @@
  * call ends before its start() returns. check_debruijn (tests/askai.py)
  * runs it.
  */
+#include <ctype.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <stdbit.h>
@@ -182,49 +188,104 @@ debruijn_plugin_masks (unsigned order)
 	return (1U << ((1U << (order - 1U)) - 1U)) - 1U;
 }
 
-/* Returns the number @p text as strtoll() reads it with the base 0, or as
- * strtoull() reads it if it is over INT64_MAX: hexadecimal after 0x, binary
- * after 0b, octal after 0, else decimal. A negative number gives its two's
- * complement. Stores 0 in @p *e, or ENODATA for an empty @p text, ERANGE for
- * a number that 64 bits cannot hold, or EINVAL if @p text is not one number
- * from its start to its end. strtoll() reads up to the first byte that
- * cannot be in a number, which can be after @p text: the 0 that json-c
+/* Drops the white space that strtoll() skips from the start of @p text. */
+static struct cstr_view
+debruijn_plugin_space (struct cstr_view text)
+{
+	while (text.len && isspace((unsigned char)*text.data)) {
+		++text.data;
+		--text.len;
+	}
+	return text;
+}
+
+/* Returns the base that the prefix of the number at the start of @p text
+ * gives, after white space and a minus sign: 16 for 0x, 2 for 0b and 8 for
+ * a 0 before a digit. Returns 0 for a number without a prefix, such as 0.
+ */
+static int
+debruijn_plugin_base (struct cstr_view text)
+{
+	text = debruijn_plugin_space(text);
+	if (text.len && *text.data == '-')
+		text = cstr_view_slice(text, 1, SIZE_MAX);
+	if (text.len < 2 || *text.data != '0')
+		return 0;
+	switch (text.data[1]) {
+	case 'x':
+	case 'X':
+		return 16;
+	case 'b':
+	case 'B':
+		return 2;
+	default:
+		return isdigit((unsigned char)text.data[1]) ? 8 : 0;
+	}
+}
+
+/* Returns the number @p text as strtoll() reads it in the base @p base, or
+ * as strtoull() reads it if it is over INT64_MAX. White space can precede
+ * the number, but a + sign cannot. The base 0 takes the base from the
+ * prefix: hexadecimal after 0x, binary after 0b, octal after 0, else
+ * decimal. A negative number stands for its two's complement in @p bits
+ * bits, from 1 to 64. If it does not fit in them, it keeps all 64 bits of
+ * its two's complement, which makes it wider than @p bits bits.
+ *
+ * Stores 0 in @p *e, or EDOM for a negative number if @p bits is 0, ERANGE
+ * for a number that 64 bits cannot hold, or EINVAL if @p text is not one
+ * number from its start to its end. strtoll() reads up to the first byte
+ * that cannot be in a number, which can be after @p text: the 0 that json-c
  * writes after a string, or the dot after a mask. A number that goes on
  * after @p text is refused.
  */
 static uint64_t
 debruijn_plugin_number (struct cstr_view  text,
+                        int               base,
+                        unsigned          bits,
                         int              *e)
 {
-	if (!text.len) {
-		*e = ENODATA;
+	/* strtoll() would take a + sign after the white space. */
+	text = debruijn_plugin_space(text);
+	if (!text.len || *text.data == '+') {
+		*e = EINVAL;
 		return 0;
 	}
 	char *end;
 	/* strtoll() and strtoull() report a range error only in errno. */
 	errno = 0;
-	int64_t const i64 = _Generic(i64, long: strtol, long long: strtoll)(text.data, &end, 0);
+	int64_t const i64 = _Generic(i64, long: strtol, long long: strtoll)(text.data, &end, base);
 	uint64_t u64 = (uint64_t)i64;
 	if (errno == ERANGE && i64 == INT64_MAX) {
 		errno = 0;
 		u64 = _Generic(u64, unsigned long: strtoul,
-		                    unsigned long long: strtoull)(text.data, &end, 0);
+		                    unsigned long long: strtoull)(text.data, &end, base);
 	}
 	*e = errno;
 	if (!*e && end != text.data + text.len)
 		*e = EINVAL;
+	if (*e || i64 >= 0)
+		return u64;
+	/* The sign bit is bit bits - 1, and a negative number fits if all
+	 * the bits from it up are set. */
+	if (!bits)
+		*e = EDOM;
+	else if (!(~u64 >> (bits - 1U)))
+		u64 &= UINT64_MAX >> (64U - bits);
 	return u64;
 }
 
 /* Reads the address @p text, 1 to 4 masks with a dot between two, each a
- * number as debruijn_plugin_number() reads it, into @p masks. Stores the
- * number of masks in @p *n. Returns 0 or EINVAL.
+ * number as debruijn_plugin_number() reads it, into @p masks. A prefix on
+ * the leftmost mask is the base of all the masks; without one, each mask
+ * takes the base from its own prefix. Stores the number of masks in @p *n.
+ * Returns 0 or EINVAL.
  */
 static int
 debruijn_plugin_address (struct cstr_view  text,
                          unsigned          masks[static DEBRUIJN_PLUGIN_DEPTH],
                          size_t           *n)
 {
+	int const base = debruijn_plugin_base(text);
 	*n = 0;
 	for (struct cstr_view part = {}; text.len || !*n; ) {
 		if (*n == DEBRUIJN_PLUGIN_DEPTH)
@@ -236,8 +297,11 @@ debruijn_plugin_address (struct cstr_view  text,
 			/* A dot ends no address. */
 			return EINVAL;
 		}
+		/* Mask n expands a word of order n + 2, which has 2^(n+1) - 1
+		 * choice bits. */
 		int e;
-		uint64_t const value = debruijn_plugin_number(part, &e);
+		uint64_t const value = debruijn_plugin_number(part, *n ? base : 0,
+		                                              (1U << (*n + 1U)) - 1U, &e);
 		if (e || value > UINT32_MAX)
 			return EINVAL;
 		masks[(*n)++] = (unsigned)value;
@@ -480,9 +544,10 @@ debruijn_plugin_definition (void const *service)
 		"in order, return word and decimal dotted address separated by a space (word "
 		"alone for order 2). ordered: the same rows in ascending order from rank first "
 		"on, at most limit rows.\"},"
-		"\"word\":{\"type\":\"string\",\"description\":\"A word as a number, as strtoull() "
-		"reads it with the base 0: hexadecimal after 0x, such as 0x09af, binary after "
-		"0b, octal after 0, else decimal.\"},"
+		"\"word\":{\"type\":\"string\",\"description\":\"A word as a number, as strtoll() "
+		"reads it with the base 0 but without a + sign: hexadecimal after 0x, such as "
+		"0x09af, binary after 0b, octal after 0, else decimal. A negative word needs "
+		"order and stands for its two's complement in 2^order bits.\"},"
 		"\"order\":{\"type\":\"integer\",\"minimum\":2,\"maximum\":6,\"description\":"
 		"\"The order of word: 2 to 5 for expand and children, 3 to 6 for collapse and "
 		"address, 2 to 6 for windows, rank, unrank and ordered. With word, order is "
@@ -491,7 +556,10 @@ debruijn_plugin_definition (void const *service)
 		"\"mask\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"For expand: "
 		"at most 1, 7, 127 and 32767 for the orders 2, 3, 4 and 5.\"},"
 		"\"address\":{\"type\":\"string\",\"description\":\"For path or rank: 1 to 4 masks "
-		"with a dot between two. A mask is a number as for word, such as 127 or 0x7f.\"},"
+		"with a dot between two, each a number as for word. A prefix on the first mask "
+		"gives the base of all, as in 0b1.110.1010101.111110000011111. A negative mask "
+		"stands for its two's complement in the 1, 3, 7 or 15 bits of its place, so -1 "
+		"is the largest mask.\"},"
 		"\"rank\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":67108863,\"description\":"
 		"\"For unrank: less than 1, 2, 16, 2048 or 67108864 for orders 2 through 6.\"},"
 		"\"first\":{\"type\":\"integer\",\"minimum\":0,\"default\":0,\"description\":"
@@ -572,12 +640,19 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 		return;
 	}
 	if (needs & A(WORD)) {
+		/* A word of order n has 2^n bits. Without order, the sign bit of a
+		 * negative word is unknown. */
 		int e;
-		word = debruijn_plugin_number(jb_view(of[DEBRUIJN_PLUGIN_ARG_WORD]), &e);
+		word = debruijn_plugin_number(jb_view(of[DEBRUIJN_PLUGIN_ARG_WORD]), 0,
+		                              given ? 1U << order : 0, &e);
 		if (e) {
-			mcp_slot_tell(slot, CSTR_VIEW("The word argument must be a string of a 64-bit "
-			                              "number: hexadecimal after 0x, binary after 0b, "
-			                              "octal after 0, else decimal."), TOOL_FAILED);
+			mcp_slot_tell(slot, e == EDOM
+			                    ? CSTR_VIEW("A negative word needs the argument order: a word "
+			                                "of order n has 2^n bits.")
+			                    : CSTR_VIEW("The word argument must be a string of a 64-bit "
+			                                "number without a + sign: hexadecimal after 0x, "
+			                                "binary after 0b, octal after 0, else decimal."),
+			              TOOL_FAILED);
 			return;
 		}
 		/* The library reads a word whose first order bits are zero: normal

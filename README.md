@@ -2221,10 +2221,21 @@ numerically first word of each order and the largest masks to the last: the
 words of the address `0.0.0.0` are `17.09af.04653adf.0218a392cd3d5dbf`, and
 those of `1.7.127.32767` are `1d.0f65.07dcd629.03f79d71b4cb0a89`.
 
-A word, and each mask of an address, is a number as `strtoull()` reads it
-with the base 0: hexadecimal after `0x`, binary after `0b`, octal after `0`,
-and else decimal. So `0x17`, `0b10111`, `027` and `23` are the same word,
-while `17` is `0x11`, and `09af` is not a number.
+A word, and each mask of an address, is a number as `strtoll()` reads it
+with the base 0, but without a `+` sign: hexadecimal after `0x`, binary
+after `0b`, octal after `0`, and else decimal. So `0x17`, `0b10111`, `027`
+and `23` are the same word, while `17` is `0x11`, and `09af` is not a
+number. A prefix on the leftmost mask of an address is the base of all its
+masks: `0b1.110.1010101.111110000011111` is `1.6.85.31775`, and
+`0x1.7.7f.7fff` is `1.7.127.32767`. A lone `0` has no prefix, so
+`0.1.100.10548` is decimal. Without a prefix on the leftmost mask, each
+mask takes the base from its own prefix.
+
+A negative number stands for the unsigned number with the same bits in the
+width of the word or mask: 2^n bits for a word of order n, and 2^(n-1) - 1
+bits for a mask that expands a word of order n. A negative word therefore
+needs `order`, so that its sign bit is known. `-1` is the largest mask, and
+`-1.-1.-1.-1` is `1.7.127.32767`.
 
 An action also takes a rotation of a word, such as `0x9af0` for `0x09af`,
 and rotates it to start with its n zero bits before it reads it; `windows`
