@@ -94,6 +94,16 @@ extern int
 cli_console_busy (struct cli_console *console,
                   uint8_t             busy);
 
+/** Show that an answer is under way: @p when is FLAG_DURING from the call
+ *  of the ask tool until it returns, and 0 after it. A slime crawls on the
+ *  status row while an answer is under way, and not while only a tool call
+ *  that the user started runs. Returns 0, or EINVAL if @p console is null
+ *  or @p when is another value.
+ */
+extern int
+cli_console_answering (struct cli_console *console,
+                       uint8_t             when);
+
 /** The counts of the status row. */
 enum cli_console_count : uint32_t {
 	CLI_CONSOLE_COUNT_TURN,       /**< the turn of an ask call */

@@ -192,13 +192,14 @@ While tools run, nothing is bright. The counts of an answer stay until the
 next answer starts again from turn 1. When nothing runs, `idle` follows the
 counts. The status row shows no key hints; `/help` lists the keys.
 
-While an answer or a manual tool call runs, a slime crawls back and forth on
-the status row (`src/cli_slime.c`), 20 frames a second. Its track starts at
-the second column after the text of the row and ends at the end of the row,
-and terminals narrower than 43 columns have no slime. A resize, or a change
-in the width of the text, moves the slime to the same share of the way on
-its new track. With `--color off` or `NO_COLOR` neither the counts nor the
-slime are colored, and the slime leaves no trail.
+While an answer runs, a slime crawls back and forth on the status row
+(`src/cli_slime.c`), 20 frames a second. A tool call that you start, such as
+`/tool`, or a local command does not start it. Its track starts at the second
+column after the text of the row and ends at the end of the row, and
+terminals narrower than 43 columns have no slime. A resize, or a change in
+the width of the text, moves the slime to the same share of the way on its
+new track. With `--color off` or `NO_COLOR` neither the counts nor the slime
+are colored, and the slime leaves no trail.
 
 Each scrollback retains up to 10,000 logical lines or 16 MiB of text.
 Older transcript content is evicted independently of drafts and

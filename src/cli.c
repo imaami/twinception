@@ -723,8 +723,11 @@ cli_ask (struct cli          *cli,
 	uint64_t flags = CLI_STREAM_DELTAS | (flag_any(cli->options->flags, CLI_OPTIONS_NO_REASONING) ? 0 : CLI_STREAM_REASONING);
 	struct cli_stream stream = cli_stream(cli->console, CSTR_VIEW("cli"), flags);
 	cli_json_auto result = nullptr;
-	int e = cli_client_rpc(&cli->client, CLI_TOOLS_CALL, json_object_get(params),
-	                       cli_stream_notify, &stream, &result, error);
+	int e = cli_console_answering(cli->console, FLAG_DURING);
+	if (!e)
+		e = cli_client_rpc(&cli->client, CLI_TOOLS_CALL, json_object_get(params),
+		                   cli_stream_notify, &stream, &result, error);
+	(void)cli_console_answering(cli->console, 0);
 	if (!e)
 		e = cli_stream_result(&stream, result, answer, error);
 	cli_stream_fini(&stream);

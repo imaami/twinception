@@ -868,6 +868,53 @@ def check_status_counts(cli):
           "a narrow screen cuts the row: PASS", flush=True)
 
 
+def check_tool_slime(cli):
+    """A tool call that the user starts keeps the status row from "idle"
+    without the slime, which crawls only while an answer is under way."""
+    ask = {"name": "ask_ai", "title": "Ask AI", "inputSchema": {
+        "type": "object", "properties": {"prompt": {"type": "string"},
+        "messages": {"type": "array"}, "background": {"type": "boolean"}}}}
+    probe = {"name": "probe", "inputSchema": {"type": "object", "properties": {
+        "token": {"type": "string"}}}}
+    arrived = {"probe": threading.Event(), "ask_ai": threading.Event()}
+    release = {"probe": threading.Event(), "ask_ai": threading.Event()}
+
+    def methods(request):
+        if request["method"] == "tools/list":
+            return 200, "application/json", {"result": {"tools": [ask, probe]}}
+        return None
+
+    def reply(request):
+        name = request["params"]["name"]
+        arrived[name].set()
+        release[name].wait(20)
+        return response("probed" if name == "probe" else "answered")
+
+    with Peer(reply, methods) as peer:
+        terminal, master, slave, before = Terminal.spawn(cli, peer.socket, "--no-history", columns=60)
+        try:
+            terminal.expect(b"idle")
+            os.write(master, b"/tool probe token=x\r")
+            assert arrived["probe"].wait(5), "the tool call did not reach the peer"
+            output = terminal.drain(0.3)
+            assert not SLIME.search(output), output
+            assert b"idle" not in terminal.rows[23], terminal.rows[23]
+            release["probe"].set()
+            terminal.update(b"probed", b"idle")
+            os.write(master, b"hello\r")
+            assert arrived["ask_ai"].wait(5), "the prompt did not reach the peer"
+            terminal.expect(BUSY)
+            release["ask_ai"].set()
+            terminal.update(b"answered", b"idle")
+            os.write(master, b"\x01\x0b/quit\r")
+            assert terminal.proc.wait(timeout=3) == 0, terminal.proc.returncode
+        finally:
+            for event in release.values():
+                event.set()
+            terminal.close(slave)
+    print("cli events: a tool call of the user runs without the slime, an answer with it: PASS", flush=True)
+
+
 def check_chat_completion(cli):
     ask = {"name": "ask_ai", "title": "Ask AI", "inputSchema": {
         "type": "object", "properties": {"prompt": {"type": "string"},
@@ -1677,7 +1724,7 @@ def check_blocked_worker(cli):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        raise SystemExit("usage: cli_events.py ASKAI_CLI [sticky lock saved-lock fds exhaust tui partial keys queue overflow counts mentions colors cells panels summaries commands concurrent quit interrupt files slow worker ...]")
+        raise SystemExit("usage: cli_events.py ASKAI_CLI [sticky lock saved-lock fds exhaust tui partial keys queue overflow counts tool-slime mentions colors cells panels summaries commands concurrent quit interrupt files slow worker ...]")
     if not unix_available():
         raise SystemExit(0)
     cli = os.path.realpath(sys.argv[1])
@@ -1686,6 +1733,7 @@ if __name__ == "__main__":
               "fds": check_descriptor_limit, "exhaust": check_descriptor_exhaustion,
               "tui": check_tui_drafts, "partial": check_partial_paste, "keys": check_keyboard,
               "queue": check_queued_input, "overflow": check_queue_overflow, "counts": check_status_counts,
+              "tool-slime": check_tool_slime,
               "mentions": check_chat_completion, "colors": check_fullscreen_colors,
               "cells": check_terminal_cells, "panels": check_panels, "summaries": check_tool_summaries,
               "commands": check_busy_commands, "concurrent": check_concurrent_tools, "quit": check_busy_quit,

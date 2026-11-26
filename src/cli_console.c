@@ -70,6 +70,11 @@ enum : uint64_t {
 	 */
 	CLI_CONSOLE_BUSY = FLAG_DURING,
 
+	/* cli_console_answering() was called with FLAG_DURING: an answer is
+	 * under way, and a slime crawls on the status row.
+	 */
+	CLI_CONSOLE_ANSWERING = FLAG_OWN(8),
+
 	/* A read of the input returned no bytes, or the console handed the end
 	 * of the input to the reader.
 	 */
@@ -215,9 +220,9 @@ struct cli_console {
 	struct dstr                      screen; /**< a frame of the full-screen UI */
 	struct cli_console_lines         queue;  /**< the accepted lines */
 	struct cli_slime                 slime;  /**< crawls along the status row
-	                                              after its text while the
-	                                              console is busy; cols is 0
-	                                              when the console is not */
+	                                              after its text while an
+	                                              answer is under way; cols
+	                                              is 0 when none is */
 	struct loop_timer                slime_timer;  /**< the next frame of the
 	                                                    slime, in the heap of
 	                                                    the loop while the
@@ -1162,8 +1167,7 @@ cli_console_slime_due (struct loop       *loop,
 }
 
 /* Stop the slime, if it crawls, and draw all of the status row again,
- * which blanks the track of the slime. The next busy console starts a new
- * slime.
+ * which blanks the track of the slime. The next answer starts a new slime.
  */
 static void
 cli_console_crawl_stop (struct cli_console *console)
@@ -1176,12 +1180,12 @@ cli_console_crawl_stop (struct cli_console *console)
 	console->dirty |= CLI_CONSOLE_PAINT_STATUS;
 }
 
-/* Start, move or stop the slime of a busy console, so that it crawls on the
- * track from column @p x0 of the status row, the first column being 0, to
- * the end of the row. A slime moves to a new track at the same share of the
- * way between its walls. On a track narrower than CLI_SLIME_MIN_COLS it
- * stops, and moves to the next track that is wide enough. Where the slime
- * starts, moves or stops, all of the status row is drawn again, which
+/* Start, move or stop the slime of an answer under way, so that it crawls
+ * on the track from column @p x0 of the status row, the first column being
+ * 0, to the end of the row. A slime moves to a new track at the same share
+ * of the way between its walls. On a track narrower than CLI_SLIME_MIN_COLS
+ * it stops, and moves to the next track that is wide enough. Where the
+ * slime starts, moves or stops, all of the status row is drawn again, which
  * blanks the cells of the slime.
  */
 static void
@@ -1190,7 +1194,7 @@ cli_console_crawl_track (struct cli_console *console,
 {
 	struct cli_slime *slime = &console->slime;
 	unsigned const cols = x0 < console->columns ? console->columns - x0 : 0;
-	bool const fits = flag_any(console->flags, CLI_CONSOLE_BUSY) && cols >= CLI_SLIME_MIN_COLS;
+	bool const fits = flag_any(console->flags, CLI_CONSOLE_ANSWERING) && cols >= CLI_SLIME_MIN_COLS;
 	if (console->slime_timer.slot ? fits && slime->x0 == x0 && slime->cols == cols : !fits)
 		return;
 	dstr_clear(&console->decorations[2]);
@@ -1761,6 +1765,23 @@ cli_console_busy (struct cli_console *console,
 	if (busy && flag_any(console->flags, CLI_CONSOLE_FULLSCREEN))
 		return cli_console_editor_start(console);
 	/* No count grows once the work has ended. */
+	console->progress.active = CLI_CONSOLE_COUNT_NONE;
+	return 0;
+}
+
+int
+cli_console_answering (struct cli_console *console,
+                       uint8_t             when)
+{
+	if (!console || (when && when != FLAG_DURING))
+		return EINVAL;
+	console->dirty |= CLI_CONSOLE_PAINT_STATUS;
+	if (when) {
+		flag_set(&console->flags, CLI_CONSOLE_ANSWERING);
+		return 0;
+	}
+	flag_clr(&console->flags, CLI_CONSOLE_ANSWERING);
+	/* No count grows once the answer has ended. */
 	console->progress.active = CLI_CONSOLE_COUNT_NONE;
 	cli_console_crawl_stop(console);
 	return 0;
