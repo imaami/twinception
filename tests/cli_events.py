@@ -217,11 +217,11 @@ def check_descriptor_exhaustion(cli):
 SLIME = re.compile(rb"\x1b\[23;1H(?:\x1b\[[0-9;]*[CGm]|\xe2\x96[\x81-\x88]| )+")
 
 # The status row of a client that is not busy and has no counts.
-IDLE = "[    0 ][       0 ][       0 ] idle"
+IDLE = "[   0][      0][      0] idle"
 
 # The first frame of a new slime, which starts at the left end of its track
-# from column 32 as the client becomes busy.
-BUSY = b"\x1b[23;1H\x1b[32G"
+# from column 26 as an answer starts.
+BUSY = b"\x1b[23;1H\x1b[26G"
 
 
 def slime_body(frames, cells):
@@ -820,8 +820,8 @@ def check_status_counts(cli):
                                           sse_wire([note(700, 8762, latest="text"), result])]
 
     def share(body, columns):
-        # Where the middle of the body is on the track from column 32.
-        return ((body[0] + body[-1]) / 2 - 32) / (columns - 31)
+        # Where the middle of the body is on the track from column 26.
+        return ((body[0] + body[-1]) / 2 - 26) / (columns - 25)
 
     def crawl(output, columns, done):
         cells = {}
@@ -830,7 +830,7 @@ def check_status_counts(cli):
         while not body or not done(share(body, columns)):
             assert time.monotonic() < deadline, (columns, cells)
             body = slime_body(SLIME.findall(terminal.drain(0.1)), cells)
-        assert all(32 <= column <= columns for column in cells), (columns, cells)
+        assert all(26 <= column <= columns for column in cells), (columns, cells)
         return share(body, columns)
 
     with Peer(reply) as peer:
@@ -839,8 +839,8 @@ def check_status_counts(cli):
         try:
             assert paused.wait(5), "the request did not reach the peer"
             output = terminal.update(b"8762")
-            assert bytes(terminal.rows[23]).rstrip() == b"[   13 ][     655 ][    8762 ]", terminal.rows[23]
-            assert re.search(rb"\x1b\[0;38;5;245m +655\x1b\[0;38;5;110m \]\[ \x1b\[0;38;5;220m +8762",
+            assert bytes(terminal.rows[23]).rstrip() == b"[  13][    655][   8762]", terminal.rows[23]
+            assert re.search(rb"\x1b\[38;5;245m +655\x1b\[0m\]\[\x1b\[38;5;220m +8762",
                              output), output
             before_resize = crawl(output, 60, lambda at: at >= 0.3)
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
@@ -850,15 +850,15 @@ def check_status_counts(cli):
             assert abs(after_resize - before_resize) < 0.15, (before_resize, after_resize)
             resume.set()
             output = terminal.update(b"counted", b"idle")
-            assert bytes(terminal.rows[23]).rstrip() == b"[   13 ][     700 ][    8762 ] idle", terminal.rows[23]
-            styles = re.findall(rb"\x1b\[0;38;5;(\d+)m +(700|8762)", output)
+            assert bytes(terminal.rows[23]).rstrip() == b"[  13][    700][   8762] idle", terminal.rows[23]
+            styles = re.findall(rb"\x1b\[38;5;(\d+)m +(700|8762)", output)
             assert styles and dict((count, style) for style, count in styles) == \
                 {b"700": b"245", b"8762": b"136"}, styles
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 20, 0, 0))
             terminal.proc.send_signal(signal.SIGWINCH)
             row = re.search(rb"\x1b\[23;1H((?:\x1b\[[0-9;]*m|[^\x1b])*)", terminal.update(b"\x1b[23;1H"))
-            assert row and re.sub(rb"\x1b\[[0-9;]*m", b"", row[1]) == b"[   13 ][     700 ][", row
-            assert b"\x1b[0;38;5;245m    700" in row[1], row
+            assert row and re.sub(rb"\x1b\[[0-9;]*m", b"", row[1]) == b"[  13][    700][   8", row
+            assert b"\x1b[38;5;245m    700" in row[1], row
             os.write(master, b"\x01\x0b/quit\r")
             assert terminal.proc.wait(timeout=3) == 0, terminal.proc.returncode
         finally:

@@ -183,7 +183,7 @@ with their text rewrapped to fit. Terminals smaller than 8 columns or 6 rows
 show only input until resized; both buffers and the draft are retained.
 
 The status row shows three counts of the ask call, such as
-`[   13 ][     655 ][    8762 ]`: the turn, the tokens of the text and the
+`[  13][    655][   8762]`: the turn, the tokens of the text and the
 tokens of the reasoning of all its turns so far, as the server reports them
 in its progress notifications. The text tokens are grey and the reasoning tokens
 amber, and the count that grows is drawn in a brighter shade. While a turn
@@ -196,7 +196,7 @@ While an answer runs, a slime crawls back and forth on the status row
 (`src/cli_slime.c`), 20 frames a second. A tool call that you start, such as
 `/tool`, or a local command does not start it. Its track starts at the second
 column after the text of the row and ends at the end of the row, and
-terminals narrower than 43 columns have no slime. A resize, or a change in
+terminals narrower than 37 columns have no slime. A resize, or a change in
 the width of the text, moves the slime to the same share of the way on its
 new track. With `--color off` or `NO_COLOR` neither the counts nor the slime
 are colored, and the slime leaves no trail.
