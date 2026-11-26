@@ -20402,6 +20402,16 @@ def check_godbolt(binary, up, godbolt):
                      "godbolt_macros", "godbolt_targets"], tools
                 assert [t["inputSchema"].get("required") for t in tools[1:]] == \
                     [["action"], ["source"], ["source"], None, None], tools
+                # The arguments that each action of godbolt_catalog takes, for
+                # the completion of clients: languages refuses the columns.
+                every = ["language", "ids", "match", "kind", "family", "architecture",
+                         "limit", "first", "offset"]
+                columns = ["kind", "family", "architecture"]
+                assert tools[1]["_meta"]["askai"]["takes"] == \
+                    {"languages": [[a for a in every if a not in columns]]} | \
+                    {action: [every] for action in ("compilers", "kinds", "families",
+                                                    "architectures")}, tools[1]
+                assert set(tools[1]["inputSchema"]["properties"]) == {"action", *every}, tools[1]
                 for tool in tools[1:]:
                     assert f"Compiler Explorer at {ce.url()}" in tool["description"], tool
                     assert tool["inputSchema"]["properties"]["offset"]["description"] == \
@@ -20484,8 +20494,9 @@ def check_godbolt(binary, up, godbolt):
                     "Ids not in the list or excluded by another filter: nope. For the " \
                     "exact ids, retry with action \"compilers\" and without ids or " \
                     "other filters."
-                assert refused(ai, "godbolt_catalog", action="languages", kind="x") == \
-                    "kind, family and architecture are not valid with action languages."
+                for column in columns:
+                    assert refused(ai, "godbolt_catalog", action="languages", **{column: "x"}) == \
+                        "kind, family and architecture are not valid with action languages."
                 assert ok(ai, "godbolt_catalog", action="kinds") == \
                     "kind\tcompilers\nclang\t1\nclang-cl\t1\ndefault\t13\nticlang\t1\n" \
                     "win32-vc\t1\n" + left(1) + "\nListed 5 of the 5 kinds of the 17 " \

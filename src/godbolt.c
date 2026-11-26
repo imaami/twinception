@@ -488,6 +488,11 @@ static struct godbolt_params const godbolt_params[] = {
 #undef GODBOLT_JOB_ARGS
 #undef GODBOLT_BIT
 
+/* The arguments that filter compilers, which the action languages of
+ * godbolt_catalog refuses: kind, family and architecture, whose bits are
+ * adjacent. */
+enum : uint64_t { GODBOLT_COMPILER_FILTERS = UINT64_C(7) << GODBOLT_ARG_KIND };
+
 enum godbolt_filter : uint8_t {
 #define GODBOLT_FILTER_ENUM(id, ...) GODBOLT_FILTER_##id,
 	GODBOLT_FILTER_LIST(GODBOLT_FILTER_ENUM)
@@ -2773,8 +2778,7 @@ godbolt_args (struct json_object          *args,
 		               godbolt_arg_names[stdc_trailing_zeros(missing)].data);
 		return a;
 	}
-	/* The bits of kind, family and architecture are adjacent. */
-	if (a.action == GODBOLT_LANGUAGES && seen >> GODBOLT_ARG_KIND & 7) {
+	if (a.action == GODBOLT_LANGUAGES && seen & GODBOLT_COMPILER_FILTERS) {
 		mcp_slot_tell(slot, CSTR_VIEW("kind, family and architecture are not valid "
 		                              "with action languages."), TOOL_FAILED);
 		return a;
@@ -3164,6 +3168,27 @@ static struct {
 #undef GODBOLT_DEF_SOURCE
 #undef GODBOLT_DEF_LANGUAGE
 
+/* Returns @p def with _meta.askai.takes, the arguments that each action of
+ * godbolt_catalog takes, for the completion of clients: all of them for
+ * the actions but languages, which refuses GODBOLT_COMPILER_FILTERS. Frees
+ * @p def and returns nullptr if memory runs out.
+ */
+static struct json_object *
+godbolt_catalog_takes (struct json_object *def)
+{
+	uint64_t const args = godbolt_params[GODBOLT_CATALOG].args & ~(UINT64_C(1) << GODBOLT_ARG_ACTION);
+	struct jb_form forms[array_size(godbolt_action_names)];
+	for (size_t i = 0; i < array_size(forms); ++i)
+		forms[i] = (struct jb_form){
+			.args   = args & ~(i == GODBOLT_LANGUAGES ? GODBOLT_COMPILER_FILTERS : 0),
+			.action = i,
+		};
+	struct json_object *takes = jb_takes(godbolt_action_names, godbolt_arg_names, forms,
+	                                     array_size(forms));
+	struct json_object *askai = jb_set_or_free(json_object_new_object(), "takes", takes);
+	return jb_set_or_free(def, "_meta", jb_set_or_free(json_object_new_object(), "askai", askai));
+}
+
 /* Returns the definition of the tool @p tool in godbolt_defs[] as a new
  * reference, with the base URL of the configuration @p service in its
  * description. If the tool accepts the argument share and the
@@ -3193,6 +3218,8 @@ godbolt_definition (void const        *service,
 	struct json_object *def = json_tokener_parse(godbolt_defs[tool].json);
 	def = jb_set_or_free(def, "description",
 	                     json_object_new_string_len(text, (int)(end - text)));
+	if (tool == GODBOLT_CATALOG)
+		def = godbolt_catalog_takes(def);
 	if (!link.len)
 		return def;
 	struct json_object *props = jb_get(jb_get(def, "inputSchema"), "properties");
