@@ -270,11 +270,17 @@ class Terminal:
 
     def drain(self, timeout=0.05):
         output, self.pending = self.pending, b""
-        while select.select([self.fd], [], [], timeout)[0]:
+        # Read until no output comes for the timeout. A busy client draws
+        # a frame of the slime every 50 ms, and those frames do not count.
+        quiet = time.monotonic() + timeout
+        while (remaining := quiet - time.monotonic()) > 0 and \
+                select.select([self.fd], [], [], remaining)[0]:
             chunk = os.read(self.fd, 65536)
             assert chunk, (output[-4096:], self.proc.poll())
             self.record(chunk)
             output += chunk
+            if re.sub(rb"\x1b[78]", b"", SLIME.sub(b"", chunk)):
+                quiet = time.monotonic() + timeout
         return output
 
     def record(self, chunk):
