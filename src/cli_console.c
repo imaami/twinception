@@ -1628,8 +1628,9 @@ cli_console_status (struct cli_console *console,
 }
 
 /* Clear the stored rows and decorations of the screen, and mark all parts
- * dirty, so that the next frame paints the whole screen. A slime starts
- * again, on a track for the columns that the screen has now.
+ * dirty, so that the next frame paints the whole screen. A busy console
+ * starts its slime again, on a track for the columns that the screen has
+ * now.
  */
 static void
 cli_console_reset (struct cli_console *console)
@@ -1639,7 +1640,7 @@ cli_console_reset (struct cli_console *console)
 	for (size_t i = 0; i < array_size(console->panes); ++i)
 		for (size_t row = 0; row < array_size(console->panes[i].rows); ++row)
 			dstr_clear(&console->panes[i].rows[row]);
-	if (console->slime_timer.slot)
+	if (flag_any(console->flags, CLI_CONSOLE_BUSY))
 		cli_console_crawl_start(console);
 	console->dirty = CLI_CONSOLE_PAINT_ALL;
 	console->cursor_column = 0;
