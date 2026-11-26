@@ -60,9 +60,9 @@ check-askai: | all
 	$(PYTHON) $(TEST_DIR)askai.py $Oaskai $Otest_plugin.so $Ogodbolt.so $Odebruijn.so
 
 # Terminal editing, the Unix-socket CLI, and its argument handling.
-check-cli: $Otests/cli_io $Otests/cli_loop $Otests/cli_scrollback $Otests/cli_input \
+check-cli: $Otests/cli_io $Otests/cli_loop $Otests/cli_scrollback $Otests/cli_input $Otests/cli_slime \
            $Otests/cli_state $Otests/cli_ui $Otests/autocomplete | check-cstr-view askai-cli askai
-check-cli:; $Otests/cli_loop && $Otests/cli_io && $Otests/cli_scrollback
+check-cli:; $Otests/cli_slime && $Otests/cli_loop && $Otests/cli_io && $Otests/cli_scrollback
 	$Otests/autocomplete
 	$Otests/cli_ui
 	@directory=$$(mktemp -d) || exit 1; \
@@ -107,6 +107,9 @@ $Otests/cli_loop:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ -lm
 $Otests/cli_scrollback: $Otests/cli_scrollback.c.o $Otests/src/cli_render.c.o $Otests/src/cli_scrollback.c.o $Otests/src/cli_style.c.o \
                        $Otests/src/dstr.c.o $Otests/src/cstr_view.c.o
 $Otests/cli_scrollback:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(UTF8_LIBS)
+
+$Otests/cli_slime: $Otests/cli_slime.c.o $Otests/src/cli_slime.c.o
+$Otests/cli_slime:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ -lm
 
 $Otests/cli_input $Otests/cli_ui $Otests/cli_state $Otests/autocomplete $Otests/cstr_view: $Otests/src/cstr_view.c.o
 
