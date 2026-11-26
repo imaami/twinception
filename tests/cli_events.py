@@ -1003,7 +1003,8 @@ def check_panels(cli):
                                          "reason-49" in "\n".join(pane(rows, 1)) and "ready" in rows[-2],
                                          "answer and reasoning did not reach separate panes")
                 assert "Conversation" in output[0] and "Reasoning" in output[0], output
-                assert "Alt-Left/Right" in output[-2] and "Alt-Up/Down" in output[-2], output
+                # The status row shows the state alone; /help lists the keys.
+                assert output[-2].strip() == "ready", output
                 assert not any("reason-" in row for row in pane(output, 0)), output
                 assert not any("answer-" in row for row in pane(output, 1)), output
                 assert all(len(row) == 100 and row[0] == row[59] == row[-1] == "│"
