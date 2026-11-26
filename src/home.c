@@ -564,7 +564,7 @@ home_job_reset (struct job *job,
 {
 	job->flags = flag32(flags);
 	job->http = 0;
-	job->ev = job->evlen = job->line = job->scan = job->chunks = job->used = 0;
+	job->ev = job->evlen = job->line = job->scan = job->used = 0;
 	job->reader = (struct ai_reader){};
 	job->reason[0] = '\0';
 }
@@ -2224,10 +2224,12 @@ home_take (struct home        *home,
 	if (!e && flag_any(ev.flags, AI_EV_THOUGHT_ENDED | AI_EV_ANSWER_ENDED))
 		e = home_thought_end(home, job, flag_any(ev.flags, AI_EV_ANSWER_ENDED));
 	hist_add(&home->metrics->chunks, 1);
+	/* The progress word of the running job is the count of its tokens. */
+	uint64_t const progress = hist_get(&job->progress);
 	if (buf_peek(&job->result).len > had)
-		home_job_progress(job, (uint64_t)++job->chunks << 32);
+		home_job_progress(job, (progress & ~(uint64_t)JOB_PROGRESS_THINKING) + (UINT64_C(1) << 32));
 	else if (flag_any(ev.flags, AI_EV_THOUGHT))
-		home_job_progress(job, (uint64_t)++job->chunks << 32 | JOB_PROGRESS_THINKING);
+		home_job_progress(job, (progress | JOB_PROGRESS_THINKING) + 1);
 	job->used = ev.used ? ev.used : job->used;
 	flag_set(&job->flags, (flag_any(ev.flags, AI_EV_ANSWER_ENDED)
 	                       ? HOME_JOB_ANSWER_ENDED | HOME_JOB_PROVIDER_ENDED : 0) |
@@ -2513,7 +2515,7 @@ home_preempt (struct home *home,
 	--home->running_bg;
 	list_append(home->ready[1].next, &job->queue);
 	++home->readied[1];
-	home_job_progress(job, 1);
+	home_job_progress(job, JOB_PROGRESS_QUEUED | 1);
 	loop_ready_bulk(home->loop, &home->start);
 }
 
@@ -2794,7 +2796,7 @@ home_wait (struct home           *home,
 	list_append(&p->jobs, &job->queue);
 	job->who = p;
 	hist_add(&home->metrics->queued, 1);
-	home_job_progress(job, ++p->queued);
+	home_job_progress(job, JOB_PROGRESS_QUEUED | ++p->queued);
 	if (!c)
 		home_preempt_excess(home);
 	return 0;

@@ -17,8 +17,8 @@
  * principal), queues it for an upstream slot, runs it until its deadline at
  * most, writes the result and its status, and posts JOB_DONE: every job ends
  * in exactly one completion. Meanwhile home publishes the job's progress, its
- * place in its principal's queue and then the tokens of its answer, thinking or
- * text, and posts JOB_PROGRESS_CHANGED for a front that asked for it, a burst
+ * place in its principal's queue and then the tokens of its answer's text and
+ * thinking, and posts JOB_PROGRESS_CHANGED for a front that asked for it, a burst
  * being one message. With JOB_ASK_STREAM, home publishes one immutable event
  * mailbox through JOB_DELTA_PUBLISHED and pauses parsing. The front posts
  * JOB_DELTA_CONSUMED after consuming it; home then reclaims it and resumes.
@@ -124,7 +124,15 @@ enum { JOB_CALLS = 16 };
 /** Jobs that home queues for one principal and one class, at most. */
 enum { JOB_QUEUED = 8 };
 
-/** In a running job's progress, beside its tokens: the latest was thinking. */
+/** In a job's progress: the job waits in its principal's queue, and the low
+ *  32 bits are its place there, from 1.
+ */
+#define JOB_PROGRESS_QUEUED   (UINT64_C(1) << 63)
+
+/** In a running job's progress, between the tokens of its thinking in bits 0
+ *  to 30 and the tokens of its text in bits 32 to 62: the latest token was
+ *  thinking.
+ */
 #define JOB_PROGRESS_THINKING (UINT32_C(1) << 31)
 
 /** What the front asks of a job, before JOB_START. */
@@ -345,10 +353,13 @@ struct job {
 	                                         without a session; UINT64_MAX
 	                                         twice for a job of an identity */
 	_Atomic uint64_t       progress;    /**< home writes, the front reads:
-	                                         the answer's tokens << 32 | the
-	                                         place in its principal's queue,
-	                                         from 1, or, once it runs,
-	                                         JOB_PROGRESS_THINKING or 0 */
+	                                         JOB_PROGRESS_QUEUED | the place
+	                                         in its principal's queue, or,
+	                                         once it runs, the tokens of the
+	                                         answer, which are its events
+	                                         with text << 32 | those with
+	                                         thinking, and
+	                                         JOB_PROGRESS_THINKING */
 	_Atomic uint32_t       home_bits;   /**< pending to home */
 	_Atomic uint32_t       front_bits;  /**< pending to the front */
 	_Atomic uint32_t       refs;        /**< the front, home, each message queued */
@@ -362,9 +373,7 @@ struct job {
 	uint32_t               evlen;       /**< and its length so far */
 	uint32_t               line;        /**< where the line read begins */
 	uint32_t               scan;        /**< how far it has been looked at */
-	uint32_t               chunks;      /**< home's: the answer's tokens, its
-	                                         events with text or thinking */
-	uint32_t               used;        /**< home writes before JOB_DONE:
+	uint32_t               used;       /**< home writes before JOB_DONE:
 	                                         the tokens of the request and
 	                                         the answer, as its usage says;
 	                                         0: unknown */
@@ -381,7 +390,7 @@ struct job {
 	                                         enum job_status */
 	uint8_t                asks;        /**< the front's, before JOB_START:
 	                                         enum job_ask */
-	char                   reason[43];  /**< home's: the answer's stop reason.
+	char                   reason[47];  /**< home's: the answer's stop reason.
 	                                         The array is longer than any
 	                                         reason that the providers name,
 	                                         and its size leaves no padding at

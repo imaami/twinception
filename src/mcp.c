@@ -729,6 +729,9 @@ struct mcp_req {
 	                                    began */
 	uint64_t             next_note;  /* 1 + the last progress it gave; 0:
 	                                    none */
+	uint64_t             tokens[2];  /* the tokens of the text and of the
+	                                    thinking of the answers of the
+	                                    turns that ended */
 	uint64_t             principal;  /* The principal of the request's
 	                                    client. mcp_begin() copies it from
 	                                    the stream, because s can be nullptr
@@ -2242,17 +2245,20 @@ mcp_slot_respond (struct mcp_slot *slot,
 }
 
 /* Write a notification of progress @p value, saying @p text, into the
- * reply. A notification of a call names the tool @p tool in _meta. A
- * notification without @p tool reports the status of the call. Neither
- * text needs escaping.
+ * reply. Its _meta contains the kind "tool" and the name @p tool of the
+ * tool that a turn calls, or the kind "status" without @p tool, then the
+ * turn, @p tokens, which are the tokens of the text and of the thinking of
+ * the answers so far, and the members @p more. No text needs escaping.
  */
 static int
 mcp_req_notify_put (struct mcp_req   *req,
                     uint64_t          value,
                     struct cstr_view  text,
-                    struct cstr_view  tool)
+                    struct cstr_view  tool,
+                    uint64_t const    tokens[static 2],
+                    struct cstr_view  more)
 {
-	char num[UTIL_DECIMAL];
+	char num[4][UTIL_DECIMAL];
 	struct cstr_view const token = jb_wire(req->token);
 	if (!token.data)
 		return ENOMEM;
@@ -2261,27 +2267,38 @@ mcp_req_notify_put (struct mcp_req   *req,
 		     "\"params\":{\"progressToken\":"),
 		RAW(token.data, token.len),
 		FRAG(",\"progress\":"),
-		BYTES(util_decimal(num + sizeof num, value, 0)),
+		BYTES(util_decimal(num[0] + UTIL_DECIMAL, value, 0)),
 		FRAG(",\"message\":\""),
 		BYTES(text),
 		FRAG("\",\"_meta\":{\"askai\":{\"kind\":\""),
 		tool.len ? FRAG("tool\",\"tool\":\"") : FRAG("status"),
 		BYTES(tool),
-		FRAG("\"}}}}\n\n"),
+		FRAG("\",\"turn\":"),
+		BYTES(util_decimal(num[1] + UTIL_DECIMAL, req->turn, 0)),
+		FRAG(",\"tokens\":{\"text\":"),
+		BYTES(util_decimal(num[2] + UTIL_DECIMAL, tokens[0], 0)),
+		FRAG(",\"reasoning\":"),
+		BYTES(util_decimal(num[3] + UTIL_DECIMAL, tokens[1], 0)),
+		FRAG("}"),
+		BYTES(more),
+		FRAG("}}}}\n\n"),
 	};
 	return mcp_req_put(req, p, array_size(p));
 }
 
 /* Send a notification of progress @p value, saying @p text, on the call's
- * event stream, for a call of @p tool, or of the status without @p tool.
+ * event stream, for a call of @p tool, or of the status without @p tool,
+ * as mcp_req_notify_put() writes it.
  */
 static void
 mcp_req_notify (struct mcp_req   *req,
                 uint64_t          value,
                 struct cstr_view  text,
-                struct cstr_view  tool)
+                struct cstr_view  tool,
+                uint64_t const    tokens[static 2],
+                struct cstr_view  more)
 {
-	(void)mcp_req_flush(req, mcp_req_notify_put(req, value, text, tool));
+	(void)mcp_req_flush(req, mcp_req_notify_put(req, value, text, tool, tokens, more));
 	req->noted = req->mcp->loop->now;
 	req->next_note = value + 1;
 }
@@ -2355,40 +2372,73 @@ mcp_req_delta (struct mcp_req *req)
 		loop_ready_bulk(loop, &req->step);
 }
 
+/* Returns the place in its principal's queue that the progress word
+ * @p progress of a job contains (src/job.h), and puts the tokens of its
+ * answer in @p tokens, those of the text in [0] and those of the thinking
+ * in [1]. The word of a queued job contains a place and no tokens, the word
+ * of a running job tokens and no place.
+ */
+static uint32_t
+mcp_job_progress (uint64_t progress,
+                  uint64_t tokens[static 2])
+{
+	if (progress & JOB_PROGRESS_QUEUED) {
+		tokens[0] = tokens[1] = 0;
+		return (uint32_t)progress;
+	}
+	tokens[0] = progress >> 32;
+	tokens[1] = (uint32_t)progress & ~JOB_PROGRESS_THINKING;
+	return 0;
+}
+
 /* Notify the client how far the call has come, as its job's progress says:
- * its place in its principal's queue, then the tokens of its answer, thinking
- * or text, as a progress that grows with each notification, and with each
- * turn. Held back by output the client has yet to read, it goes in a later
- * step.
+ * its place in its principal's queue, then the tokens of the answers of
+ * all its turns, as a progress that grows with each notification. The
+ * message contains the sum of the tokens, and "thinking" while the latest
+ * token is thinking or "generating" otherwise. _meta contains the tokens
+ * of the text and of the thinking apart, the place while the job is
+ * queued, and the kind of the latest token once the answer of the turn
+ * contains a token. Held back by output the client has yet to read, it goes in
+ * a later step.
  */
 static void
 mcp_req_progress (struct mcp_req *req)
 {
-	uint64_t progress = atomic_load_explicit(&req->job->progress,
-	                                         memory_order_relaxed);
-	uint32_t place = (uint32_t)progress & ~JOB_PROGRESS_THINKING;
-	uint32_t tokens = (uint32_t)(progress >> 32);
+	/* The kind of the latest token: in the message, and in _meta. */
+	static char const *const kinds[][2] = {{"generating", "text"}, {"thinking", "reasoning"}};
+	uint64_t const progress = atomic_load_explicit(&req->job->progress,
+	                                               memory_order_relaxed);
+	uint64_t tokens[2];
+	uint32_t const place = mcp_job_progress(progress, tokens);
 	if (place > req->place)
 		req->place = place;
 	flag_clr(&req->flags, MCP_REQ_PROGRESS_PENDING);
-	/* Queued, a job has no tokens; running, no place. */
-	uint64_t value = req->base + (req->place - place) + tokens;
+	uint64_t const answer = tokens[0] + tokens[1];
+	uint64_t const value = req->base + (req->place - place) + answer;
 	if (value < req->next_note)
 		return;
+	char const *const *kind = kinds[(bool)(progress & JOB_PROGRESS_THINKING)];
+	tokens[0] += req->tokens[0];
+	tokens[1] += req->tokens[1];
 	UTIL_TEXT(64) text = {};
+	UTIL_TEXT(32) more = {};
 	if (req->lent)
 		(void)util_text_printf(&text, "turn %" PRIu32 ", ", req->turn);
-	if (place)
+	if (place) {
 		(void)util_text_printf(&text, "queued, position %" PRIu32, place);
-	else
-		(void)util_text_printf(&text, "%s, %" PRIu32 " tokens",
-		                       progress & JOB_PROGRESS_THINKING ? "thinking" : "generating", tokens);
-	mcp_req_notify(req, value, util_text_view(&text), cstr_view(nullptr));
+		(void)util_text_printf(&more, ",\"place\":%" PRIu32, place);
+	} else {
+		(void)util_text_printf(&text, "%s, %" PRIu64 " tokens", kind[0], tokens[0] + tokens[1]);
+		if (answer)
+			(void)util_text_printf(&more, ",\"latest\":\"%s\"", kind[1]);
+	}
+	mcp_req_notify(req, value, util_text_view(&text), cstr_view(nullptr), tokens,
+	               util_text_view(&more));
 }
 
-/* Notify the client that a turn calls @p tool, a tool askai names, unless
- * the call has no progressToken, or output the client has yet to read holds
- * the notification back.
+/* Notify the client that a turn calls @p tool, a tool askai names, with the
+ * tokens of the answers so far, unless the call has no progressToken, or
+ * output the client has yet to read holds the notification back.
  */
 static void
 mcp_req_notify_tool (struct mcp_req   *req,
@@ -2400,7 +2450,7 @@ mcp_req_notify_tool (struct mcp_req   *req,
 	mcp_req_notify(req, req->next_note, util_format_view(text, sizeof text, "turn %" PRIu32
 	                                                     ", calling %.*s", req->turn,
 	                                                     (int)tool.len, tool.data),
-	               tool);
+	               tool, req->tokens, cstr_view(nullptr));
 }
 
 /* Set the request's timer for the first due of a keep-alive, a notification
@@ -4436,7 +4486,8 @@ mcp_req_dozes (struct mcp_req const *req)
 	       mcp_agenda_pending(req->agenda);
 }
 
-/* Handle the end of a turn, once the answer of its job has arrived. An
+/* Handle the end of a turn, once the answer of its job has arrived: add the
+ * tokens of the answer to those of the call. An
  * answer that calls no tool is the answer of the ask call, unless the
  * turns doze after it. The answer of the last turn
  * is the answer of the ask call too. Otherwise parse the arguments of the
@@ -4449,6 +4500,10 @@ mcp_req_turn_done (struct mcp_req *req)
 	struct mcp *mcp = req->mcp;
 	struct job *job = req->job;
 	long told = mcp->st->ep->context;
+	uint64_t tokens[2];
+	(void)mcp_job_progress(atomic_load_explicit(&job->progress, memory_order_relaxed), tokens);
+	req->tokens[0] += tokens[0];
+	req->tokens[1] += tokens[1];
 	req->used = job->used;
 	req->filed = req->replay_filed;
 	req->replay_filed = 0;

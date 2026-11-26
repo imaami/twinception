@@ -86,8 +86,13 @@ model works (`--sse-keepalive`), and ends with the result as one `data:`
 event. A call whose `params._meta` has a `progressToken` also gets
 `notifications/progress` on its stream, at most one every 100 ms: its place in
 its session's queue while it waits for the upstream, then the tokens of the
-answer as they come, "thinking" while the latest is the model's thinking and
-"generating" once it is the answer's text. Other requests, and clients that accept only JSON, get
+answers of all its turns so far as they come, "thinking" while the latest is
+the model's thinking and "generating" once it is the answer's text. A token is
+an event of the upstream's stream with text or thinking. `_meta.askai`
+contains the same numbers apart, as
+`{"kind": "status", "turn": 2, "tokens": {"text": 655, "reasoning": 8762}, "latest": "reasoning"}`,
+with `place` while the call waits in the queue, and `latest` once the turn's
+answer contains a token. Other requests, and clients that accept only JSON, get
 JSON. Request bodies may come with a `Content-Length` or in chunks.
 
 A 2026-07-28 client that takes tasks, as its request's client capabilities
@@ -1139,8 +1144,8 @@ continues the conversation, and one without starts a new conversation. The argum
 argument `thread` of earlier versions is refused, and the refusal names
 `conversation`. With a `progressToken`, its notifications say the turn and the
 tool being called, and the notification of a call also names the tool in
-`_meta.askai`, as `{"kind": "tool", "tool": "git"}`; other notifications
-have `{"kind": "status"}`. `--max-turns` (32) bounds the turns: the turn before the
+`_meta.askai`, as `{"kind": "tool", "tool": "git", "turn": 1, "tokens": {"text": 0, "reasoning": 41}}`;
+other notifications have `"kind": "status"`. `--max-turns` (32) bounds the turns: the turn before the
 last is told so, and a last answer that still calls tools ends the call, as an
 error if it has no text. A `notifications/cancelled` from the caller of the
 call ends it too, at once, also while a tool runs or the turns doze. The

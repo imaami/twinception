@@ -8646,9 +8646,11 @@ def check_progress(binary, up):
     """A call whose request has a progressToken gets notifications/progress on
     its event stream, at most one every 100 ms, their progress growing: its
     place in its session's queue, then the tokens of its answer, "thinking"
-    while the latest is the model's thinking, in every protocol. None comes
-    after the result, or once the call is cancelled, nor to a call without a
-    token, nor in a JSON reply."""
+    while the latest is the model's thinking, in every protocol. _meta.askai
+    contains the turn and the tokens of the text and of the reasoning apart, the
+    place while the call is queued, and the kind of the latest token. None
+    comes after the result, or once the call is cancelled, nor to a call
+    without a token, nor in a JSON reply."""
     chunk = sse_wire([(None, {"choices": [{"index": 0, "delta": {"content": "x"}}]})])
     wire = chunk * 30 + sse_wire([(None, "[DONE]")])
 
@@ -8683,7 +8685,13 @@ def check_progress(binary, up):
         assert all(n["progressToken"] == "tok" for _, n in notes), notes
         progress = [n["progress"] for _, n in notes]
         assert progress == sorted(set(progress)) and progress[0] == 0, progress
-        assert re.fullmatch(r"generating, \d+ tokens", notes[-1][1]["message"]), notes
+        said = re.fullmatch(r"generating, (\d+) tokens", notes[-1][1]["message"])
+        assert said, notes
+        metas = [n["_meta"]["askai"] for _, n in notes]
+        assert metas[0] == {"kind": "status", "turn": 1, "place": 1,
+                            "tokens": {"text": 0, "reasoning": 0}}, metas
+        assert metas[-1] == {"kind": "status", "turn": 1, "latest": "text",
+                             "tokens": {"text": int(said[1]), "reasoning": 0}}, metas
         times = [t for t, _ in notes]
         assert len(notes) <= (times[-1] - times[0]) / 0.1 + 2, times
         assert text_of(Replies(slow).next()[1]["result"]) == "A"
@@ -8760,6 +8768,17 @@ def check_progress(binary, up):
         kinds = [m[1] for m in said if m and int(m[2])]
         assert kinds and kinds[0] == "thinking" and kinds[-1] == "generating" and \
             kinds == sorted(kinds, key=lambda k: k == "generating"), (protocol, notes)
+        # _meta counts the two kinds apart, and names the kind of the latest.
+        latest = {"thinking": "reasoning", "generating": "text"}
+        for m, n in zip(said, notes):
+            meta = n["_meta"]["askai"]
+            if not m or "place" in meta:
+                continue
+            assert sum(meta["tokens"].values()) == int(m[2]) and \
+                meta.get("latest", latest[m[1]]) == latest[m[1]] and \
+                ("latest" in meta) == (int(m[2]) > 0), (protocol, notes)
+        last = notes[-1]["_meta"]["askai"]["tokens"]
+        assert last["reasoning"] > 0 and last["text"] > 0, (protocol, notes)
     up.reply = lambda request: (200, ANSWERS["openai"])
 
     print("progress: notifications on the event stream, rate-limited: PASS")
@@ -16494,8 +16513,8 @@ def check_turns(binary, up):
 
             # Notes on the turns' progress, and a client that goes mid-call
             # cancels it.
-            script[:] = [lambda r: (200, turn_stream([("a", "git", log)])),
-                         lambda r: (200, turn_stream(text="A"), 0.5)]
+            script[:] = [lambda r: (200, turn_stream([("a", "git", log)], reasoning="Plan.")),
+                         lambda r: (200, turn_stream(text="A", reasoning="Done."), 0.5)]
             params = {"name": "ask_ai", "arguments": {"prompt": "Q"},
                       "_meta": {"progressToken": "t"}}
             with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
@@ -16506,11 +16525,17 @@ def check_turns(binary, up):
             messages = [e["params"]["message"] for _, e in events if "method" in e]
             assert "turn 1, calling git" in messages, messages
             # A tool notification names the tool for clients such as askai-cli.
+            # Each notification contains the turn and the tokens of the answers of
+            # all turns so far, which only grow.
             kinds = [(e["params"]["message"], e["params"]["_meta"]["askai"])
                      for _, e in events if "method" in e]
-            assert ("turn 1, calling git", {"kind": "tool", "tool": "git"}) in kinds and \
-                all(meta == {"kind": "status"} for text, meta in kinds
+            assert ("turn 1, calling git", {"kind": "tool", "tool": "git", "turn": 1,
+                                            "tokens": {"text": 0, "reasoning": 1}}) in kinds and \
+                all(meta["kind"] == "status" and meta["turn"] in (1, 2) and
+                    meta["tokens"]["reasoning"] >= meta["turn"] - 1 for text, meta in kinds
                     if text != "turn 1, calling git"), kinds
+            counts = [(meta["tokens"]["text"], meta["tokens"]["reasoning"]) for _, meta in kinds]
+            assert all(a <= b and c <= d for (a, c), (b, d) in zip(counts, counts[1:])), kinds
             progress = [e["params"]["progress"] for _, e in events if "method" in e]
             assert progress == sorted(set(progress)), progress
             assert events[-1][1]["result"]["content"][0]["text"] == "A", events
