@@ -77,6 +77,12 @@ static struct cstr_view const code_arg_names[] = { CODE_ARG_LIST(XL_VIEW) };
 #undef CODE_ARG_LIST
 
 static struct cstr_view const code_actions[] = { CXI_ACTION_LIST(XL_VIEW) };
+
+/* The keys among name, line and warning that askai-code takes for each
+ * action. */
+#define CODE_ACTION_KEYS(id, name, keys) keys,
+static uint32_t const code_action_keys[] = { CXI_ACTION_LIST(CODE_ACTION_KEYS) };
+#undef CODE_ACTION_KEYS
 static struct cstr_view const code_keys[] = { CXI_KEY_LIST(XL_VIEW) };
 
 /* The size of a word of code_number(): the longest name of a key, '=', a
@@ -297,7 +303,29 @@ code_definition (void const *service)
 	static struct cstr_view const required[] = {
 		CSTR_VIEW_INIT("repo"), CSTR_VIEW_INIT("action"),
 	};
-	return jb_object(
+	/* The arguments of each action, for the completion of clients: repo,
+	 * path, revision and offset, and those of name, line and warnings
+	 * that askai-code takes for the action. */
+	static struct {
+		uint8_t key;
+		uint8_t arg;
+	} const options[] = {
+		{ CXI_KEY_NAME, CODE_ARG_NAME }, { CXI_KEY_LINE, CODE_ARG_LINE },
+		{ CXI_KEY_WARNING, CODE_ARG_WARNINGS },
+	};
+	uint64_t const every = UINT64_C(1) << CODE_ARG_REPO | UINT64_C(1) << CODE_ARG_PATH |
+	                       UINT64_C(1) << CODE_ARG_REVISION | UINT64_C(1) << CODE_ARG_OFFSET;
+	struct jb_form forms[CXI_ACTIONS];
+	for (size_t a = 0; a < CXI_ACTIONS; ++a) {
+		uint64_t args = every;
+		for (size_t i = 0; i < array_size(options); ++i)
+			args |= (uint64_t)(code_action_keys[a] >> options[i].key & 1) << options[i].arg;
+		forms[a] = (struct jb_form){
+			.args   = args,
+			.action = a,
+		};
+	}
+	struct json_object *def = jb_object(
 		"name", json_object_new_string("code"),
 		"title", json_object_new_string("C code"),
 		"description", json_object_new_string(
@@ -393,6 +421,10 @@ code_definition (void const *service)
 			"openWorldHint", json_object_new_boolean(0),
 			nullptr),
 		nullptr);
+	return jb_set_or_free(def, "_meta", jb_object(
+		"askai", jb_object("takes", jb_takes(code_actions, code_arg_names, forms, array_size(forms)),
+		                   nullptr),
+		nullptr));
 }
 
 /* Appends the word KEY=VALUE, with the name of @p key and @p value, to

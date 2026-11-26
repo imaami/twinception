@@ -11679,6 +11679,13 @@ def check_code(binary, up):
                     "describe", "outline", "diagnostics", "callers"] and \
                 "A finding can cite the numbered lines, such as c7:120-140." in \
                 tools[2]["description"], tools[2]
+            # The arguments of each action, for the completion of clients,
+            # from the table that askai-code checks a request by.
+            every = ["repo", "path", "revision", "offset"]
+            assert tools[2]["_meta"]["askai"]["takes"] == {
+                "describe": [["repo", "path", "name", "line", "revision", "offset"]],
+                "outline": [every], "diagnostics": [["repo", "path", "warnings", "revision", "offset"]],
+                "callers": [["repo", "path", "name", "revision", "offset"]]}, tools[2]
 
             # askai checks the types of the arguments, and askai-code checks
             # their values.
@@ -12893,6 +12900,18 @@ def check_code_describe(binary, up, call, head, d, cdb):
                 "warning, such as -Wpadded.")
         assert call(ai, error=True, repo="proj", action="outline", path="src/lay.c",
                     warnings=["-Wpadded"]) == "The warnings argument is only for diagnostics."
+        # Each action refuses the arguments of the others, as its list in
+        # _meta.askai.takes leaves them out.
+        only = {"name": ("lay_add", "The name argument is only for describe and callers."),
+                "line": (1, "The line argument is only for describe."),
+                "warnings": (["-Wpadded"], "The warnings argument is only for diagnostics.")}
+        takes = {"describe": {"name", "line"}, "outline": set(), "diagnostics": {"warnings"},
+                 "callers": {"name"}}
+        for action, taken in takes.items():
+            given = {"name": "lay_add"} if "name" in taken else {}
+            for other in set(only) - taken:
+                assert call(ai, error=True, repo="proj", action=action, path="src/lay.c",
+                            **given, **{other: only[other][0]}) == only[other][1], (action, other)
         # The layout of a record of 20,000 members is cut at 2,000 rows, and
         # its padding is that of the rows shown.
         text = call(ai, repo="proj", action="describe", path="src/big.c", name="struct big")

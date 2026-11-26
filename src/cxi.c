@@ -62,6 +62,11 @@ enum {
 static struct cstr_view const cxi_keys[] = { CXI_KEY_LIST(XL_VIEW) };
 static struct cstr_view const cxi_actions[] = { CXI_ACTION_LIST(XL_VIEW) };
 
+/* The keys among name, line and warning that each action takes. */
+#define CXI_ACTION_KEYS(id, name, keys) keys,
+static uint32_t const cxi_action_keys[] = { CXI_ACTION_LIST(CXI_ACTION_KEYS) };
+#undef CXI_ACTION_KEYS
+
 /* A call of askai-code: the request from its arguments, the answer, the
  * compile commands, and the parse of the file. For describe, the record
  * line "lines FIRST LAST TOTAL AT LEN PATH" comes before the answer: it
@@ -3876,6 +3881,7 @@ cxi_valid (struct cxi *x)
 	struct cstr_view const name = x->key[CXI_KEY_NAME];
 	bool const describe = x->action == CXI_ACTION_DESCRIBE;
 	bool const callers = x->action == CXI_ACTION_CALLERS;
+	uint32_t const keys = x->action < CXI_ACTIONS ? cxi_action_keys[x->action] : 0;
 	size_t i = 0;
 	for (; i < x->n_warnings; ++i) {
 		char const *w = x->warning[i];
@@ -3895,16 +3901,16 @@ cxi_valid (struct cxi *x)
 		: callers && (!name.data || name.len > CXI_NAME || cxi_ident(name) != name.len)
 		? CSTR_VIEW("Give callers a name argument, the name of a function or of a "
 		            "function-like macro, such as git_start.")
-		: !describe && !callers && name.data
+		: name.data && !(keys >> CXI_KEY_NAME & 1)
 		? CSTR_VIEW("The name argument is only for describe and callers.")
 		: !callers && !path.data
 		? CSTR_VIEW("Give a path argument, such as src/git.c. Only callers works without "
 		            "path.")
-		: !describe && line.data
+		: line.data && !(keys >> CXI_KEY_LINE & 1)
 		? CSTR_VIEW("The line argument is only for describe.")
 		: line.data && (util_number(line.data, line.len, UINT32_MAX, &x->line) || !x->line)
 		? CSTR_VIEW("The line argument must be a whole number from 1.")
-		: x->n_warnings && x->action != CXI_ACTION_DIAGNOSTICS
+		: x->n_warnings && !(keys >> CXI_KEY_WARNING & 1)
 		? CSTR_VIEW("The warnings argument is only for diagnostics.") : cstr_view(nullptr);
 	if (why.data) {
 		cxi_out_view(&x->out, why);

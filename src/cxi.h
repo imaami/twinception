@@ -25,12 +25,16 @@
 
 #include <stdint.h>
 
-/** The actions of the code tool: X(ID, name). */
-#define CXI_ACTION_LIST(X)            \
-        X(DESCRIBE,    "describe")    \
-        X(OUTLINE,     "outline")     \
-        X(DIAGNOSTICS, "diagnostics") \
-        X(CALLERS,     "callers")
+/** The actions of the code tool: X(ID, name, keys), the constant
+ *  CXI_ACTION_ID, the name, and those of the keys name, line and warning
+ *  that the action takes, as the bits 1 << CXI_KEY_ID. Every action takes
+ *  repo, path and the commit.
+ */
+#define CXI_ACTION_LIST(X)                                                     \
+        X(DESCRIBE,    "describe",    1U << CXI_KEY_NAME | 1U << CXI_KEY_LINE) \
+        X(OUTLINE,     "outline",     0)                                       \
+        X(DIAGNOSTICS, "diagnostics", 1U << CXI_KEY_WARNING)                   \
+        X(CALLERS,     "callers",     1U << CXI_KEY_NAME)
 
 #define CXI_ACTION_ENUM(id, ...) CXI_ACTION_##id,
 enum cxi_action : uint8_t { CXI_ACTION_LIST(CXI_ACTION_ENUM) CXI_ACTIONS };
