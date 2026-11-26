@@ -100,6 +100,54 @@ static struct {
 #undef NOTES_ACTION_ROW
 };
 
+/* The arguments of the notes tool other than action: X(ID, name). Only the
+ * definition for clients has content. */
+#define NOTES_TOOL_ARG_LIST(X)  \
+        X(FILE,     "file")     \
+        X(REVISION, "revision") \
+        X(FROM,     "from")     \
+        X(TO,       "to")       \
+        X(AS,       "as")       \
+        X(TEXT,     "text")     \
+        X(PATTERN,  "pattern")  \
+        X(OFFSET,   "offset")   \
+        X(NOTEBOOK, "notebook") \
+        X(CONTENT,  "content")
+
+#define NOTES_TOOL_ARG_ENUM(id, ...) NOTES_TOOL_ARG_##id,
+enum notes_tool_arg : uint8_t { NOTES_TOOL_ARG_LIST(NOTES_TOOL_ARG_ENUM) NOTES_TOOL_ARGS };
+#undef NOTES_TOOL_ARG_ENUM
+
+static struct cstr_view const notes_tool_arg_names[] = { NOTES_TOOL_ARG_LIST(XL_VIEW) };
+#undef NOTES_TOOL_ARG_LIST
+
+#define A(id) (UINT64_C(1) << NOTES_TOOL_ARG_##id)
+
+/* Returns the arguments that the action @p which takes, as bits of
+ * notes_tool_arg_names[]: file with NOTES_ACTION_FILE and for history and
+ * search, revision with NOTES_ACTION_REVISION, from and to for diff, as
+ * for copy and restore, text and content for add, append and replace,
+ * pattern for search, offset with NOTES_ACTION_OFFSET, and notebook for
+ * every action but members. notes_tool_start() refuses file, revision,
+ * from and to for the other actions.
+ */
+static uint64_t
+notes_tool_takes (size_t which)
+{
+	uint32_t const flags = notes_tool_actions[which].flags.bits;
+	uint32_t const fetch = notes_tool_actions[which].fetch;
+	uint32_t const kind = fetch & FETCH_KIND;
+	bool const text = flags & NOTES_ACTION_SELF && !(fetch & (FETCH_DELETE | FETCH_RESTORE));
+	return (flags & NOTES_ACTION_FILE || kind == FETCH_LIST || kind == FETCH_GREP ? A(FILE) : 0) |
+	       (flags & NOTES_ACTION_REVISION ? A(REVISION) : 0) |
+	       (kind == FETCH_DIFF ? A(FROM) | A(TO) : 0) |
+	       (fetch & (FETCH_COPY | FETCH_RESTORE) ? A(AS) : 0) |
+	       (text ? A(TEXT) | A(CONTENT) : 0) |
+	       (kind == FETCH_GREP ? A(PATTERN) : 0) |
+	       (flags & NOTES_ACTION_OFFSET ? A(OFFSET) : 0) |
+	       (which != NOTES_ACTION_MEMBERS ? A(NOTEBOOK) : 0);
+}
+
 /* The message for a file or as argument that is not a valid name. */
 static struct cstr_view const bad_name =
 	CSTR_VIEW_INIT("A note name must be 1 to 255 bytes without control characters. Examples: "
@@ -2226,8 +2274,8 @@ notes_tool_start (struct mcp_slot    *slot,
 	}
 	/* history and search accept file too. history then lists only the
 	 * changes to that note, and search reads only that note. */
-	bool const accepts = flags & NOTES_ACTION_FILE || kind == FETCH_LIST || kind == FETCH_GREP;
-	if (file && !accepts) {
+	uint64_t const takes = notes_tool_takes(which);
+	if (file && !(takes & A(FILE))) {
 		mcp_slot_tell(slot, CSTR_VIEW("members and list take no file argument."),
 		              TOOL_FAILED);
 		return;
@@ -2235,7 +2283,7 @@ notes_tool_start (struct mcp_slot    *slot,
 	struct json_object *revision = jb_get(args, "revision");
 	struct json_object *from = jb_get(args, "from");
 	struct json_object *to = jb_get(args, "to");
-	if ((revision && !(flags & NOTES_ACTION_REVISION)) || ((from || to) && !diff)) {
+	if ((revision && !(takes & A(REVISION))) || ((from || to) && !(takes & A(FROM)))) {
 		mcp_slot_tell(slot, CSTR_VIEW("Give revision only with read or restore. Give from "
 		                              "and to only with diff."), TOOL_FAILED);
 		return;
@@ -2310,6 +2358,8 @@ notes_tool_start (struct mcp_slot    *slot,
 		notes_tool_stage(slot, kind, 0);
 	}
 }
+
+#undef A
 
 /* Returns the definition of the notes tool for a turn if @p turn is true,
  * or else for clients. Only the definition for clients contains the
@@ -2425,18 +2475,25 @@ notes_tool_definition (void const *service)
 {
 	struct notes_tool const *tool = service;
 	struct json_object *def = notes_tool_schema(tool, false);
+	/* The arguments of each action of clients, for their completion. */
+	struct jb_form forms[array_size(notes_action_names)];
+	size_t const offered = notes_tool_action_count(tool, false);
+	for (size_t i = 0; i < offered; ++i)
+		forms[i] = (struct jb_form){
+			.args   = notes_tool_takes(i),
+			.action = i,
+		};
+	struct json_object *askai = jb_object(
+		"takes", jb_takes(notes_action_names, notes_tool_arg_names, forms, offered), nullptr);
 	/* The session ID stays the same when askai or the client restarts.
 	 * Clients find the members with the action members. */
 	struct member_session const *session = member_registry_session(tool->members);
-	if (!session)
-		return def;
-	return jb_set_or_free(def, "_meta", jb_object(
-		"askai", jb_object(
-			"session", jb_string(session->id),
-			"agent", json_object_new_string(session->agent.name),
-			"members", json_object_new_boolean(1),
-			nullptr),
-		nullptr));
+	if (session) {
+		askai = jb_set_or_free(askai, "session", jb_string(session->id));
+		askai = jb_set_or_free(askai, "agent", json_object_new_string(session->agent.name));
+		askai = jb_set_or_free(askai, "members", json_object_new_boolean(1));
+	}
+	return jb_set_or_free(def, "_meta", jb_object("askai", askai, nullptr));
 }
 
 struct json_object *

@@ -1323,8 +1323,9 @@ record is a create-only ref: the first writer of a name creates it, and a
 later service of the same agent adopts it. A person becomes a member with
 the first write of `notes`, or with the first ask call whose turns get
 `notes`. The `_meta` of the tool `notes` has the ID of the session as
-`session`, the name of the agent as `agent`, and `members`, which says that
-the tool lists the members.
+`session`, the name of the agent as `agent`, `members`, which says that the
+tool lists the members, and `takes`, the arguments of each action (see
+[Plugins](#plugins)).
 
 Each member has one notebook, the branch `refs/heads/person/NAME/notes` or
 `refs/heads/agent/NAME/notes`, and writes only that notebook. Every member

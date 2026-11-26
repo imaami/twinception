@@ -13248,8 +13248,22 @@ def check_notes(binary, up):
                     session = git("log", "-1", "--format=%(trailers:key=Session,valueonly)",
                                   "refs/askai/session").decode().strip()
                     assert re.fullmatch(r"[0-9a-f]{32}", session), session
-                    assert listed[0]["_meta"]["askai"] == {
+                    meta = listed[0]["_meta"]["askai"]
+                    assert {key: value for key, value in meta.items() if key != "takes"} == {
                         "session": session, "agent": "writers", "members": True}, listed
+                    # The arguments of each action, for the completion of
+                    # clients (notes_tool_takes()).
+                    written = ["file", "text", "notebook", "content"]
+                    assert meta["takes"] == {
+                        "add": [written], "append": [written], "replace": [written],
+                        "delete": [["file", "notebook"]],
+                        "restore": [["file", "revision", "as", "notebook"]],
+                        "members": [["offset"]], "list": [["offset", "notebook"]],
+                        "search": [["file", "pattern", "offset", "notebook"]],
+                        "history": [["file", "offset", "notebook"]],
+                        "read": [["file", "revision", "offset", "notebook"]],
+                        "diff": [["file", "from", "to", "offset", "notebook"]],
+                        "copy": [["file", "as", "notebook"]]}, meta
                     description = listed[0]["description"]
                     assert description.startswith(
                         "Notes are files in notebooks. Each member of this session has one "
@@ -14803,6 +14817,19 @@ def check_notes_texts(binary, up):
                 assert call(action="copy", file="a.md", notebook="p", **{"from": "x"}) == \
                     "!Give revision only with read or restore. Give from and to only " \
                     "with diff."
+                # Each action refuses file, revision, from and to where its
+                # list in _meta.askai.takes leaves them out.
+                takes = {t["name"]: t for t in ai.rpc("tools/list")[2]["result"]["tools"]}[
+                    "notes"]["_meta"]["askai"]["takes"]
+                revisions = "!Give revision only with read or restore. Give from and to " \
+                    "only with diff."
+                refusals = {"file": "!members and list take no file argument.",
+                            "revision": revisions, "from": revisions, "to": revisions}
+                for action, [taken] in takes.items():
+                    given = {"file": "a.md"} if "file" in taken else {}
+                    for other in set(refusals) - set(taken):
+                        assert call(action=action, **given, **{other: "a.md"}) == \
+                            refusals[other], (action, other)
 
                 assert re.fullmatch(saved('Add "a.md" (6 bytes)'),
                                     call(action="add", file="a.md", text="alpha\n"))
