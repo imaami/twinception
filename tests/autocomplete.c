@@ -571,11 +571,34 @@ int main(void)
 	AT("/tool git command=log", "/tool git command=loglog", 18);
 	AT("/tool gi x=1", "/tool git x=1", 8);
 	AT("/tool gi x=1", "/tool gitgi x=1", 6);
+	/* Only a form of shapes that fits the other arguments is offered: rank
+	 * takes word and order, or address, and only draw takes limit. */
+	HAS("/tool shapes action=rank ", "/tool shapes action=rank word=");
+	HAS("/tool shapes action=rank ", "/tool shapes action=rank order=");
+	HAS("/tool shapes action=rank ", "/tool shapes action=rank address=");
+	HAS("/tool shapes action=rank wo", "/tool shapes action=rank word=");
+	EMPTY("/tool shapes action=rank l");
+	EMPTY("/tool shapes action=rank word=x a");
+	EMPTY("/tool shapes action=rank address=x ");
+	EMPTY("/tool shapes action=clear ");
+	HAS("/tool shapes limit=3 ", "/tool shapes limit=3 action=");
+	HAS("/tool shapes limit=3 ", "/tool shapes limit=3 word=");
+	EMPTY("/tool shapes limit=3 ad");
+	HAS("/tool shapes action=", "/tool shapes action=clear");
+	autocomplete_only(catalog, CSTR_VIEW("/tool shapes limit=3 action="), 28,
+	                  CSTR_VIEW("/tool shapes limit=3 action=draw "), 33);
+	autocomplete_only(catalog, CSTR_VIEW("/tool shapes address=x action="), 30,
+	                  CSTR_VIEW("/tool shapes address=x action=rank "), 35);
+	autocomplete_only(catalog, CSTR_VIEW("/tool shapes word=x action=r"), 28,
+	                  CSTR_VIEW("/tool shapes word=x action=rank "), 32);
+	AT("/tool shapes address=x action=rank", "/tool shapes address=x action=rankrank", 30);
+	/* A set with a name that is no property leaves loose without forms. */
+	HAS("/tool loose ", "/tool loose extra=");
 	EMPTY("/tool absent ");
 	EMPTY("/tool git recipient=");
 	EMPTY("/tool git command=log com");
 	assert(autocomplete_list_count(catalog, AUTOCOMPLETE_MEMBERS) == 3);
-	assert(autocomplete_tool_count(catalog) == 5);
+	assert(autocomplete_tool_count(catalog) == 7);
 	assert(autocomplete_find_tool(catalog, cstr_view_n("gitJUNK", 3)));
 	char counted[] = {'@', 'a', 'l'};
 	autocomplete_has(catalog, cstr_view_n(counted, sizeof counted), CSTR_VIEW("@alice"),

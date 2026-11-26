@@ -54,6 +54,14 @@ struct autocomplete_property {
 	struct flag64                  flags;
 };
 
+/* A form of a call of a tool, from the member takes of _meta.askai of its
+ * definition: an action, and the other arguments that the call takes, as
+ * bit i for the property i of the entry. */
+struct autocomplete_form {
+	uint64_t         args;
+	struct cstr_view action;
+};
+
 struct autocomplete_entry {
 	struct autocomplete_tool      tool;
 	struct json_object           *definition;
@@ -61,6 +69,8 @@ struct autocomplete_entry {
 	struct autocomplete_property *properties;
 	size_t                        count;
 	size_t                        storage;
+	struct autocomplete_form     *forms;
+	size_t                        form_count;
 };
 
 /* Returns the entry of the tool @p name before autocomplete_add_tool()
@@ -531,6 +541,7 @@ autocomplete_entry_fini (struct autocomplete_entry *entry)
 		property->values = nullptr;
 	}
 	free(entry->properties);
+	free(entry->forms);
 	json_object_put(entry->definition);
 	*entry = (struct autocomplete_entry){};
 }
@@ -706,6 +717,72 @@ autocomplete_entry_properties (struct autocomplete       *ac,
 	return 0;
 }
 
+/* Sets *args to the bits of the properties of @p entry that the names in
+ * the array @p set name. Returns 0, or EINVAL if @p set is no array of
+ * names of properties.
+ */
+static int
+autocomplete_form_args (struct autocomplete_entry const *entry,
+                        struct json_object              *set,
+                        uint64_t                        *args)
+{
+	*args = 0;
+	if (!json_object_is_type(set, json_type_array))
+		return EINVAL;
+	size_t const n = json_object_array_length(set);
+	for (size_t i = 0; i < n; ++i) {
+		struct autocomplete_property const *property =
+			autocomplete_entry_property(entry, jb_view(json_object_array_get_idx(set, i)));
+		if (!property)
+			return EINVAL;
+		*args |= UINT64_C(1) << (property - entry->properties);
+	}
+	return 0;
+}
+
+/* Reads the forms of the calls of the tool of @p entry from the member takes
+ * of _meta.askai of its definition: an object with a member for each action,
+ * an array of the sets of the other arguments that the action takes, each an
+ * array of property names. A value of another shape, a name that is no
+ * property, or more properties than the bits of a mask leave the entry
+ * without forms, and its completion offers every property. Returns 0 or
+ * ENOMEM.
+ */
+static int
+autocomplete_entry_forms (struct autocomplete_entry *entry)
+{
+	struct json_object *takes = jb_get(jb_get(jb_get(entry->definition, "_meta"), "askai"), "takes");
+	if (!json_object_is_type(takes, json_type_object) || entry->count > 64)
+		return 0;
+	size_t n = 0;
+	struct json_object_iter action;
+	json_object_object_foreachC(takes, action) {
+		if (!json_object_is_type(action.val, json_type_array))
+			return 0;
+		n += json_object_array_length(action.val);
+	}
+	struct autocomplete_form *forms = n ? malloc(n * sizeof *forms) : nullptr;
+	if (!forms)
+		return n ? ENOMEM : 0;
+	size_t count = 0;
+	int error = 0;
+	json_object_object_foreachC(takes, action) {
+		size_t const sets = json_object_array_length(action.val);
+		for (size_t i = 0; !error && i < sets; ++i) {
+			forms[count].action = cstr_view(action.key);
+			error = autocomplete_form_args(entry, json_object_array_get_idx(action.val, i),
+			                               &forms[count++].args);
+		}
+	}
+	if (error) {
+		free(forms);
+		return 0;
+	}
+	entry->forms = forms;
+	entry->form_count = count;
+	return 0;
+}
+
 int
 autocomplete_add_tool (struct autocomplete *ac,
                        struct json_object  *def)
@@ -735,6 +812,8 @@ autocomplete_add_tool (struct autocomplete *ac,
 	error = autocomplete_resolve(ac, entry.root, &entry.root);
 	if (!error)
 		error = autocomplete_entry_properties(ac, &entry, jb_get(entry.root, "properties"));
+	if (!error)
+		error = autocomplete_entry_forms(&entry);
 	if (error)
 		goto fail;
 	/* A new entry in place of an old one needs no room, so the splice
@@ -1017,16 +1096,104 @@ autocomplete_note_paths (struct autocomplete              *ac,
 	return 0;
 }
 
+/* The argument whose value selects the form of a call. */
+static struct cstr_view const autocomplete_selector = CSTR_VIEW_INIT("action");
+
+/* Sets *present to the bits of the properties of @p entry that the arguments
+ * in the line name, other than the token with the index @p except and the
+ * action, and *action to the value of the first action among them, unquoted
+ * into ac->key, or to no text. Returns 0 or the error of
+ * autocomplete_unquote().
+ */
+static int
+autocomplete_given (struct autocomplete             *ac,
+                    struct cstr_view                 line,
+                    struct autocomplete_entry const *entry,
+                    size_t                           except,
+                    uint64_t                        *present,
+                    struct cstr_view                *action)
+{
+	*present = 0;
+	*action = (struct cstr_view){};
+	for (size_t i = 2; i < ac->tokens.n; ++i) {
+		struct autocomplete_token const token = ac->tokens.items[i];
+		if (i == except || token.equals == SIZE_MAX)
+			continue;
+		struct cstr_view const key = cstr_view_slice(line, token.begin, token.equals - token.begin);
+		struct autocomplete_property const *property = autocomplete_entry_property(entry, key);
+		if (!property)
+			continue;
+		if (!cstr_view_equal(key, autocomplete_selector)) {
+			*present |= UINT64_C(1) << (property - entry->properties);
+			continue;
+		}
+		if (action->len)
+			continue;
+		int error = autocomplete_unquote(&ac->key, cstr_view_slice(line, token.equals + 1,
+		                                                           token.end - token.equals - 1));
+		if (error)
+			return error;
+		*action = cstr_view_dstr(&ac->key);
+	}
+	return 0;
+}
+
+/* Returns whether @p form fits a line that gives the arguments @p present
+ * and the action @p action, or no action if @p action is empty.
+ */
+static bool
+autocomplete_form_fits (struct autocomplete_form const *form,
+                        uint64_t                        present,
+                        struct cstr_view                action)
+{
+	return !(present & ~form->args) && (!action.len || cstr_view_equal(form->action, action));
+}
+
+/* Returns whether the action @p action of @p entry has a form that takes
+ * the arguments @p present.
+ */
+static bool
+autocomplete_action_fits (struct autocomplete_entry const *entry,
+                          struct cstr_view                 action,
+                          uint64_t                         present)
+{
+	for (size_t i = 0; i < entry->form_count; ++i)
+		if (autocomplete_form_fits(&entry->forms[i], present, action))
+			return true;
+	return false;
+}
+
+/* Returns the bits of the properties of @p entry that a call with the
+ * arguments @p present and the action @p action can take: the action, and
+ * the arguments of each form that fits.
+ */
+static uint64_t
+autocomplete_allowed (struct autocomplete_entry const *entry,
+                      uint64_t                         present,
+                      struct cstr_view                 action)
+{
+	struct autocomplete_property const *selector = autocomplete_entry_property(entry, autocomplete_selector);
+	uint64_t allowed = selector ? UINT64_C(1) << (selector - entry->properties) : 0;
+	for (size_t i = 0; i < entry->form_count; ++i)
+		if (autocomplete_form_fits(&entry->forms[i], present, action))
+			allowed |= entry->forms[i].args;
+	return allowed;
+}
+
 static int
 autocomplete_values (struct autocomplete                *ac,
                      struct cstr_view                    line,
                      struct autocomplete_token           current,
                      size_t                              cursor,
                      struct autocomplete_entry const    *entry,
-                     struct autocomplete_property const *property)
+                     struct autocomplete_property const *property,
+                     uint64_t                            present)
 {
 	if (!property)
 		return 0;
+	/* Only the actions with a form that takes the other arguments of the
+	 * line are offered. */
+	bool const actions = entry->form_count && cstr_view_equal(property->name, autocomplete_selector);
 	uint64_t flags = property->flags.bits;
 	struct cstr_view input = cstr_view_slice(line, current.equals + 1, cursor - current.equals - 1);
 	int error = autocomplete_unquote(&ac->decoded, input);
@@ -1036,7 +1203,8 @@ autocomplete_values (struct autocomplete                *ac,
 	char mark = input.len && (input.data[0] == '\'' || input.data[0] == '"') ? input.data[0] : 0;
 	for (size_t i = 0; i < property->count; ++i) {
 		struct autocomplete_candidate const *candidate = &property->values[i];
-		if (!flag_any(candidate->flags, AUTOCOMPLETE_VALID))
+		if (!flag_any(candidate->flags, AUTOCOMPLETE_VALID) ||
+		    (actions && !autocomplete_action_fits(entry, cstr_view_dstr(&candidate->value), present)))
 			continue;
 		error = autocomplete_value_match(ac, line, current, cursor, prefix, cstr_view_dstr(&candidate->value),
 		                                 candidate->flags.bits, mark, AUTOCOMPLETE_VALUE);
@@ -1153,15 +1321,25 @@ autocomplete_commands (struct autocomplete      *ac,
 	struct autocomplete_entry const *entry = autocomplete_entry_find(ac, cstr_view_slice(line, tool_token.begin, tool_token.end - tool_token.begin), nullptr);
 	if (!entry)
 		return 0;
+	/* A name in the token being edited does not count as used. */
+	size_t const except = current.end > current.begin ? index : SIZE_MAX;
+	uint64_t present = 0;
+	struct cstr_view action = {};
+	error = entry->form_count ? autocomplete_given(ac, line, entry, except, &present, &action) : 0;
+	if (error)
+		return error;
 	if (current.equals < cursor) {
 		struct cstr_view key = cstr_view_slice(line, current.begin, current.equals - current.begin);
-		return autocomplete_values(ac, line, current, cursor, entry, autocomplete_entry_property(entry, key));
+		return autocomplete_values(ac, line, current, cursor, entry, autocomplete_entry_property(entry, key),
+		                           present);
 	}
-	/* A name in the token being edited does not count as used. */
-	size_t except = current.end > current.begin ? index : SIZE_MAX;
+	/* With forms, only the names that a form that fits the line takes are
+	 * offered. */
+	uint64_t const allowed = entry->form_count ? autocomplete_allowed(entry, present, action) : 0;
 	for (size_t i = 0; i < entry->count; ++i) {
 		struct cstr_view name = entry->properties[i].name;
-		if (!cstr_view_starts(name, prefix) || autocomplete_used(ac, line, name, except))
+		if ((entry->form_count && !(allowed >> i & 1)) || !cstr_view_starts(name, prefix) ||
+		    autocomplete_used(ac, line, name, except))
 			continue;
 		error = cstr_view_store(name, &ac->quoted);
 		if (error)

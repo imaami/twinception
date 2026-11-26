@@ -269,6 +269,11 @@ def check_catalog(binary):
         console.send(original + LEFT * 13 + b"\t\t")
         console.until(lambda: b"log status" in console.output)
         console.line(b"\r", original.decode() + "\n")
+        # Only an action whose form takes the other arguments is offered, and
+        # a unique match goes in at the cursor and pushes the old value on.
+        console.line(b"/tool shapes limit=3 action=\t\r", "/tool shapes limit=3 action=draw \n")
+        console.line(b"/tool shapes address=x action=rank" + LEFT * 4 + b"\t\r",
+                     "/tool shapes address=x action=rankrank\n")
         console.line(b"/tool absent\t\r", "/tool absent\n")
         console.finish()
     with Console(binary, "--catalog", inputrc='"\\C-t": possible-completions\n') as console:

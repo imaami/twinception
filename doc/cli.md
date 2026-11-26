@@ -324,6 +324,12 @@ names of the members of the session for `notebook`, `member`, `recipient`
 and `author`. `/tools ` also completes tool names. Completion preserves the
 other arguments when editing in the middle of a line.
 
+A tool whose definition lists the arguments of each action in
+`_meta.askai.takes` gets only the arguments that fit those already given.
+After `action=rank`, Tab offers only the parameters that `rank` takes, and
+after `mask=1`, `action=` completes only the actions that take `mask`. A tool
+without the list completes all of its parameters.
+
 For notes tools, `file=` completes names from the notebook that `notebook=`
 names, including when `notebook=` follows the cursor. Without `notebook=`,
 read and attach complete names from the caller's own notebook. Copy needs
