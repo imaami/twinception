@@ -18035,6 +18035,15 @@ def check_findings_expand(binary, up):
                 assert status == 200, body
                 result = body["result"]
                 return result["content"][0]["text"], result.get("isError", False)
+            # The arguments that each action takes, for the completion of
+            # clients, and each action refuses the other arguments.
+            takes = listed["_meta"]["askai"]["takes"]
+            assert takes == {"list": [["author", "offset"]], "show": [["id", "offset"]],
+                             "expand": [["id", "offset"]]}, takes
+            for action, sets in takes.items():
+                for other in set(schema["properties"]) - {"action"} - {a for s in sets for a in s}:
+                    assert client(action=action, **{other: "cuh#1"}) == \
+                        (f"The action {action} takes no argument {other}.", True), (action, other)
             text, failed = client(action="list", author="cuh")
             assert not failed and text == (
                 "Findings of cuh, open first (id, state, about, claim):\n"

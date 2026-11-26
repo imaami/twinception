@@ -2164,6 +2164,26 @@ findings_definition (void const *service)
 		nullptr);
 	struct json_object *def = schema_tool("findings", dstr_get(&about), props,
 	                                      CSTR_VIEW("action"));
+	/* The arguments that each action of clients takes, for their
+	 * completion, from the rows that findings_args() checks a call by. */
+	struct cstr_view names[array_size(findings_arg_rows)];
+	for (size_t k = 0; k < array_size(names); ++k)
+		names[k] = findings_arg_rows[k].name;
+	size_t const selector = cstr_view_index(names, array_size(names), CSTR_VIEW("action"));
+	struct jb_form forms[FINDINGS_ACTIONS - FINDINGS_LIST];
+	for (size_t a = FINDINGS_LIST; a < FINDINGS_ACTIONS; ++a) {
+		uint64_t args = 0;
+		for (size_t k = 0; k < array_size(names); ++k)
+			args |= (uint64_t)(k != selector && findings_arg_rows[k].actions >> a & 1) << k;
+		forms[a - FINDINGS_LIST] = (struct jb_form){
+			.args   = args,
+			.action = a,
+		};
+	}
+	def = jb_set_or_free(def, "_meta", jb_object(
+		"askai", jb_object("takes", jb_takes(findings_actions, names, forms, array_size(forms)),
+		                   nullptr),
+		nullptr));
 	return jb_set_or_free(def, "annotations", jb_object(
 		"readOnlyHint", json_object_new_boolean(1),
 		"destructiveHint", json_object_new_boolean(0),
