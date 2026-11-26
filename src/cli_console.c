@@ -26,6 +26,7 @@
 #include "cli_loop.h"
 #include "cli_render.h"
 #include "cli_scrollback.h"
+#include "cli_slime.h"
 #include "cli_state.h"
 #include "compat.h"
 #include "dstr.h"
@@ -44,6 +45,11 @@ enum {
 	CLI_CONSOLE_TAB_INTERVAL  = 400 * MS,
 	CLI_CONSOLE_ROWS          = 256,
 	CLI_CONSOLE_COLUMNS       = 512,
+
+	/* The columns of the status row that the track of the slime leaves to
+	 * the text where the row is wide: a space, a status of 59 bytes, the
+	 * key hints and a space. */
+	CLI_CONSOLE_STATUS_TEXT   = 120,
 };
 
 /* The bits of the flags of a console, besides CLI_CONSOLE_SIMPLE. */
@@ -186,7 +192,8 @@ enum {
 	CLI_CONSOLE_PAINT_FRAME  = 1u << CLI_CONSOLE_PANES,
 	CLI_CONSOLE_PAINT_STATUS = CLI_CONSOLE_PAINT_FRAME << 1,
 	CLI_CONSOLE_PAINT_INPUT  = CLI_CONSOLE_PAINT_STATUS << 1,
-	CLI_CONSOLE_PAINT_RESET  = CLI_CONSOLE_PAINT_INPUT << 1,
+	CLI_CONSOLE_PAINT_SLIME  = CLI_CONSOLE_PAINT_INPUT << 1,
+	CLI_CONSOLE_PAINT_RESET  = CLI_CONSOLE_PAINT_SLIME << 1,
 	CLI_CONSOLE_PAINT_ALL    = (CLI_CONSOLE_PAINT_RESET << 1) - 1,
 };
 
@@ -211,6 +218,13 @@ struct cli_console {
 	struct dstr                      clean;  /**< sanitized output */
 	struct dstr                      screen; /**< a frame of the full-screen UI */
 	struct cli_console_lines         queue;  /**< the accepted lines */
+	struct cli_slime                 slime;  /**< crawls along the end of the
+	                                              status row while the console
+	                                              is busy */
+	struct loop_timer                slime_timer;  /**< the next frame of the
+	                                                    slime, in the heap of
+	                                                    the loop while the
+	                                                    slime crawls */
 	char                            *restored_line;
 	char                            *immediate_line;
 	struct autocomplete_match const *candidates;
@@ -1138,6 +1152,70 @@ cli_console_setup_readline (struct cli_console *console)
 	return e ? e : cli_console_flush(console);
 }
 
+/* The timer of the slime fired: the next frame of the screen draws the next
+ * frame of the slime.
+ */
+static void
+cli_console_slime_due (struct loop       *loop,
+                       struct loop_timer *timer)
+{
+	(void)loop;
+	struct cli_console *console = container_of(timer, struct cli_console, slime_timer);
+	console->dirty |= CLI_CONSOLE_PAINT_SLIME;
+}
+
+/* Stop the slime, if it crawls, and draw all of the status row again,
+ * which blanks the track of the slime.
+ */
+static void
+cli_console_crawl_stop (struct cli_console *console)
+{
+	if (!console->slime_timer.slot)
+		return;
+	(void)loop_timer_stop(&console->loop->loop, &console->slime_timer);
+	dstr_clear(&console->decorations[2]);
+	console->dirty |= CLI_CONSOLE_PAINT_STATUS;
+}
+
+/* Start a slime on a blank track at the end of the status row: the columns
+ * that CLI_CONSOLE_STATUS_TEXT leaves free, or a third of the row if that
+ * is more. If the track is too narrow, stop the slime instead.
+ */
+static void
+cli_console_crawl_start (struct cli_console *console)
+{
+	unsigned const rest = console->columns > CLI_CONSOLE_STATUS_TEXT
+	                      ? console->columns - CLI_CONSOLE_STATUS_TEXT : 0;
+	unsigned const cols = rest > console->columns / 3 ? rest : console->columns / 3;
+	int e;
+	struct cli_slime const slime = cli_slime(console->columns - cols, cols, (uint32_t)loop_clock(),
+	                                         console->palette == cli_style_palette(true), &e);
+	if (e || loop_timer_set(&console->loop->loop, &console->slime_timer, slime.due)) {
+		cli_console_crawl_stop(console);
+		return;
+	}
+	console->slime = slime;
+	console->dirty |= CLI_CONSOLE_PAINT_STATUS;
+}
+
+/* Append the frame of the slime to @p output, if one is due, and set the
+ * timer for the next frame. Returns 0 or ENOMEM.
+ */
+static int
+cli_console_crawl (struct cli_console *console,
+                   struct dstr        *output)
+{
+	if (!console->slime_timer.slot)
+		return 0;
+	char frame[CLI_SLIME_FRAME_MAX];
+	size_t const n = cli_slime_tick(&console->slime, loop_clock(), frame);
+	(void)loop_timer_set(&console->loop->loop, &console->slime_timer, console->slime.due);
+	/* The frame moves the cursor along the row that it is on. */
+	if (n && (!dstr_printf(output, "\033[%u;1H", console->rows - 1) || !dstr_cat_n(output, frame, n)))
+		return ENOMEM;
+	return 0;
+}
+
 struct cli_console *
 cli_console_create (uint32_t         flags,
                     struct cli_loop *loop,
@@ -1171,6 +1249,7 @@ cli_console_create (uint32_t         flags,
 		.screen            = dstr(nullptr),
 		.queue.lines       = list(&console->queue.lines),
 		.palette           = cli_style_palette(flags & CLI_CONSOLE_COLOR),
+		.slime_timer.fn    = cli_console_slime_due,
 		.history_last      = dstr(nullptr),
 		.rows              = 24,
 		.columns           = 80,
@@ -1270,6 +1349,7 @@ cli_console_destroy (struct cli_console **ptr)
 		return;
 	struct cli_console *console = *ptr;
 	*ptr = nullptr;
+	(void)loop_timer_stop(&console->loop->loop, &console->slime_timer);
 	if (flag_any(console->flags, CLI_CONSOLE_EDITOR_RUNNING))
 		cli_console_abort_line(console);
 	(void)cli_console_suspend(console);
@@ -1534,12 +1614,22 @@ cli_console_status (struct cli_console *console,
 		? util_format_view(buffer, sizeof buffer, " %.*s | %zu queued%s", (int)state.len, state.data,
 		                   console->queue.used.n, hint)
 		: util_format_view(buffer, sizeof buffer, " %.*s%s", (int)state.len, state.data, hint);
-	return dstr_printf(output, "%s%-*.*s", cli_console_style(console, CLI_STYLE_STATUS),
-	                   (int)console->columns, (int)console->columns, status.data) ? 0 : ENOMEM;
+	size_t room = console->columns;
+	if (console->slime_timer.slot) {
+		/* The text ends a column before the track of the slime. The key
+		 * hints are last, and the text leaves them out if they do not
+		 * fit. */
+		room = console->slime.x0 - 1;
+		if (status.len > room)
+			status.len -= sizeof hint - 1;
+	}
+	return dstr_printf(output, "%s%-*.*s", cli_console_style(console, CLI_STYLE_STATUS), (int)console->columns,
+	                   (int)(status.len < room ? status.len : room), status.data) ? 0 : ENOMEM;
 }
 
 /* Clear the stored rows and decorations of the screen, and mark all parts
- * dirty, so that the next frame paints the whole screen.
+ * dirty, so that the next frame paints the whole screen. A slime starts
+ * again, on a track for the columns that the screen has now.
  */
 static void
 cli_console_reset (struct cli_console *console)
@@ -1549,6 +1639,8 @@ cli_console_reset (struct cli_console *console)
 	for (size_t i = 0; i < array_size(console->panes); ++i)
 		for (size_t row = 0; row < array_size(console->panes[i].rows); ++row)
 			dstr_clear(&console->panes[i].rows[row]);
+	if (console->slime_timer.slot)
+		cli_console_crawl_start(console);
 	console->dirty = CLI_CONSOLE_PAINT_ALL;
 	console->cursor_column = 0;
 }
@@ -1588,6 +1680,8 @@ cli_console_render (struct cli_console *console)
 		if (!e)
 			e = cli_render_row(&console->decorations[i], screen, begin, rows[i], 1);
 	}
+	if (!e && framed && (console->dirty & CLI_CONSOLE_PAINT_SLIME))
+		e = cli_console_crawl(console, screen);
 	bool moved = cursor != console->cursor_column;
 	if (!e && (dstr_len(screen) > 2 || moved)) {
 		if (!dstr_cat(screen, "\0338") ||
@@ -1627,9 +1721,13 @@ cli_console_busy (struct cli_console *console,
 {
 	flag_put(&console->flags, FLAG_WHEN, busy);
 	console->dirty |= CLI_CONSOLE_PAINT_STATUS;
-	if (busy && flag_any(console->flags, CLI_CONSOLE_FULLSCREEN))
-		return cli_console_editor_start(console);
-	return 0;
+	if (!busy || !flag_any(console->flags, CLI_CONSOLE_FULLSCREEN)) {
+		cli_console_crawl_stop(console);
+		return 0;
+	}
+	if (!console->slime_timer.slot)
+		cli_console_crawl_start(console);
+	return cli_console_editor_start(console);
 }
 
 /* Pass the next key of the input to Readline. Then restore a draft that a

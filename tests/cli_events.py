@@ -211,6 +211,12 @@ def check_descriptor_exhaustion(cli):
     print("cli events: descriptor exhaustion at limits 8/12 reports failure without hanging: PASS", flush=True)
 
 
+# A frame of the slime (src/cli_slime.c) in the status row of a terminal of
+# 24 rows: a move to the row, then column moves, colours, block glyphs and
+# spaces.
+SLIME = re.compile(rb"\x1b\[23;1H(?:\x1b\[[0-9;]*[CGm]|\xe2\x96[\x81-\x88]| )+")
+
+
 class Terminal:
     """Keep unread PTY bytes between phase markers, including coalesced redraws."""
 
@@ -281,8 +287,14 @@ class Terminal:
                 break
             token, data = match[0], data[match.end():]
             position = re.fullmatch(rb"\x1b\[(\d+);(\d+)H", token)
+            # The slime moves along the status row by column.
+            column = re.fullmatch(rb"\x1b\[(\d*)([CG])", token)
             if position:
                 self.cursor = tuple(map(int, position.groups()))
+            elif column:
+                count = int(column[1] or 1)
+                row, at = self.cursor
+                self.cursor = row, count if column[2] == b"G" else at + count
             elif token == b"\x1b7":
                 self.saved = self.cursor
             elif token == b"\x1b8":
@@ -517,12 +529,12 @@ def check_partial_paste(cli):
             assert arrived.wait(5), "CLI did not submit the first prompt"
             terminal.update(b"working")
             os.write(master, b"z")
-            typed = terminal.draft(b"z", point=1)
+            typed = SLIME.sub(b"", terminal.draft(b"z", point=1))
             positions = re.findall(rb"\x1b\[(\d+);(\d+)H", typed)
             assert positions and all(row == b"24" for row, column in positions), typed
             assert b"\x1b[?25" not in typed and b"Conversation" not in typed, typed
             os.write(master, b"x")
-            typed = terminal.draft(b"zx", point=2)
+            typed = SLIME.sub(b"", terminal.draft(b"zx", point=2))
             assert re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]|\x1b[78]", b"", typed) == b"x", typed
             assert b"\x1b[K" not in typed and b"\x1b[2J" not in typed, typed
             os.write(master, b"\x01\x0b")

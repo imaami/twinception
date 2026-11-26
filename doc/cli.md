@@ -181,6 +181,14 @@ Input editing remains active. Both panes stay visible in narrow terminals,
 with their text rewrapped to fit. Terminals smaller than 8 columns or 6 rows
 show only input until resized; both buffers and the draft are retained.
 
+While an answer or a manual tool call runs, a slime crawls back and forth at
+the end of the status row (`src/cli_slime.c`), 20 frames a second. Its track
+is the columns after the first 120 of the row, or the last third of the row
+if that is more, and terminals narrower than 36 columns have no slime. The
+status row leaves out its key hints while they do not fit before the track.
+With `--color off` or `NO_COLOR` the slime is drawn in the terminal's color
+and leaves no trail.
+
 Each scrollback retains up to 10,000 logical lines or 16 MiB of text.
 Older transcript content is evicted independently of drafts and
 saved input history. Scrolling away from the bottom preserves the viewport
