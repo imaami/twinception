@@ -509,15 +509,42 @@ debruijn_plugin_windows (struct debruijn_plugin_out *out,
 	debruijn_plugin_end(out);
 }
 
+/* Returns the arguments that a call of @p action with the arguments that it
+ * needs, @p needs, takes: those, action and offset, order with word, and
+ * first and limit for children and ordered.
+ */
+static uint32_t
+debruijn_plugin_takes (size_t   action,
+                       uint32_t needs)
+{
+	bool const sequence = action == DEBRUIJN_PLUGIN_CHILDREN || action == DEBRUIJN_PLUGIN_ORDERED;
+	return needs | A(ACTION) | A(OFFSET) | (needs & A(WORD) ? A(ORDER) : 0) |
+	       (sequence ? A(FIRST) | A(LIMIT) : 0);
+}
+
 /* Returns the definition of debruijn as a new reference, or nullptr if
- * json-c cannot allocate memory.
+ * json-c cannot allocate memory. Its _meta.askai.takes lists the arguments
+ * that each action takes, for the completion of clients: rank takes word
+ * and order, or address.
  */
 static struct json_object *
 debruijn_plugin_definition (void const *service)
 {
 	(void)service;
 	static_assert(DEBRUIJN_PLUGIN_LIMIT == 64, "the description says");
-	return json_tokener_parse(
+	struct jb_form forms[DEBRUIJN_PLUGIN_ACTIONS + 1];
+	for (size_t i = 0; i < DEBRUIJN_PLUGIN_ACTIONS; ++i)
+		forms[i] = (struct jb_form){
+			.args   = debruijn_plugin_takes(i, debruijn_plugin_needs[i]) & ~A(ACTION),
+			.action = i,
+		};
+	forms[DEBRUIJN_PLUGIN_ACTIONS] = (struct jb_form){
+		.args   = debruijn_plugin_takes(DEBRUIJN_PLUGIN_RANK, A(ADDRESS)) & ~A(ACTION),
+		.action = DEBRUIJN_PLUGIN_RANK,
+	};
+	struct json_object *takes = jb_takes(debruijn_plugin_action_names, debruijn_plugin_arg_names, forms,
+	                                     array_size(forms));
+	struct json_object *def = json_tokener_parse(
 		"{\"name\":\"debruijn\",\"title\":\"De Bruijn words\","
 		"\"description\":\"Binary de Bruijn words of the orders 2 to 6. A word of "
 		"order n has 2^n bits and starts with n zero bits. Every value of n bits is in "
@@ -570,6 +597,8 @@ debruijn_plugin_definition (void const *service)
 		TOOL_OFFSET_ABOUT "\"}},"
 		"\"required\":[\"action\"],\"additionalProperties\":false},"
 		"\"annotations\":{\"readOnlyHint\":true,\"openWorldHint\":false}}");
+	struct json_object *meta = jb_set_or_free(json_object_new_object(), "takes", takes);
+	return jb_set_or_free(def, "_meta", jb_set_or_free(json_object_new_object(), "askai", meta));
 }
 
 /* Starts a call of debruijn in @p slot with the arguments @p args: checks
@@ -606,10 +635,7 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 	/* The address form of rank infers order and excludes word and order. */
 	uint32_t const needs = action == DEBRUIJN_PLUGIN_RANK && (seen & A(ADDRESS))
 	                     ? A(ADDRESS) : debruijn_plugin_needs[action];
-	bool const sequence = action == DEBRUIJN_PLUGIN_CHILDREN || action == DEBRUIJN_PLUGIN_ORDERED;
-	uint32_t const takes = needs | A(ACTION) | A(OFFSET) |
-	                       (needs & A(WORD) ? A(ORDER) : 0) |
-	                       (sequence ? A(FIRST) | A(LIMIT) : 0);
+	uint32_t const takes = debruijn_plugin_takes(action, needs);
 	uint32_t const wrong = (needs & ~(uint32_t)seen) | ((uint32_t)seen & ~takes);
 	if (wrong) {
 		unsigned const arg = stdc_trailing_zeros(wrong);

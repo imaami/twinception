@@ -20059,6 +20059,24 @@ def check_debruijn(binary, up, debruijn):
                  "rank", "unrank", "ordered"] and \
                 schema["required"] == ["action"] and \
                 schema["properties"]["offset"]["description"] == OFFSET_ABOUT, schema
+            # The arguments that each action takes, for the completion of
+            # clients, and the plugin refuses every other argument.
+            takes = tools[1]["_meta"]["askai"]["takes"]
+            assert takes == {
+                "expand": [["word", "order", "mask", "offset"]],
+                "collapse": [["word", "order", "offset"]],
+                "path": [["address", "offset"]],
+                "address": [["word", "order", "offset"]],
+                "children": [["word", "order", "first", "limit", "offset"]],
+                "windows": [["word", "order", "offset"]],
+                "rank": [["word", "order", "offset"], ["address", "offset"]],
+                "unrank": [["order", "rank", "offset"]],
+                "ordered": [["order", "first", "limit", "offset"]]}, takes
+            for action, sets in takes.items():
+                for other in set(schema["properties"]) - {"action"} - {a for s in sets for a in s}:
+                    given = {name: 1 for name in sets[0]} | {other: 1}
+                    assert f"{action} takes no argument {other}." in refused(ai, action=action, **given), \
+                        (action, other)
 
             # The output of an action is its result alone. A child, and the
             # parent of the child with the mask of the child.

@@ -2078,6 +2078,14 @@ refuses a plugin that breaks one of these rules:
 A refused plugin stops `askai` as it starts, with exit status 2 and a message
 that names the file and the reason.
 
+A tool definition may list in `_meta.askai.takes` the arguments that each
+action of the tool takes: an object with a member for each value of
+`action`, an array of the sets of the other arguments that the action
+takes, each an array of argument names. `askai-cli` completes only the
+arguments of the sets that fit the arguments already given. `jb_takes()`
+(`src/jb.h`) builds the member, also in a plugin. The upstream gets only the
+name, the description and the input schema of a tool, never its `_meta`.
+
 A plugin is built by `askai`'s make rules: `src/NAME.so.mk` lists its sources,
 as `src/test_plugin.so.mk` does for the test plugin, and `make NAME.so` builds
 it. `src/plugin.h` documents what a plugin provides and what it must not do,
@@ -2275,7 +2283,9 @@ It seeks by counting whole prefix blocks, not by visiting earlier words.
 `children` still enumerates a single parent's children in *mask* order.
 
 An action refuses an argument that it does not use, and a word that is no
-word of its order in any rotation.
+word of its order in any rotation. The definition of the tool lists the
+arguments of each action in `_meta.askai.takes`: for `rank`, either `word`
+and `order`, or `address`.
 
 ## Limits
 

@@ -8,6 +8,7 @@
 #define ASKAI_SRC_JB_H_
 
 #include <errno.h>
+#include <stdbit.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -390,6 +391,44 @@ jb_args (struct json_object      *args,
 		*seen |= UINT64_C(1) << i;
 	}
 	return 0;
+}
+
+/** A form of a call of a tool: an action, as the index of its name, and
+ *  the other arguments that the call takes, as bit i for the argument with
+ *  the index i.
+ */
+struct jb_form {
+	uint64_t args;
+	uint64_t action;
+};
+
+/**
+ * Returns the value of the member takes of _meta.askai of a tool definition
+ * from the @p n forms at @p forms: an object with a member for each action,
+ * in the order of its first form, whose value is an array of the argument
+ * sets of the forms of the action, each an array of argument names.
+ * @p actions and @p args are the NUL-terminated names that the indices of
+ * the forms stand for. Returns nullptr if memory runs out.
+ */
+static inline struct json_object *
+jb_takes (struct cstr_view const *actions,
+          struct cstr_view const *args,
+          struct jb_form const   *forms,
+          size_t                  n)
+{
+	struct json_object *takes = json_object_new_object();
+	for (size_t i = 0; takes && i < n; ++i) {
+		struct json_object *set = json_object_new_array();
+		for (uint64_t bits = forms[i].args; set && bits; bits &= bits - 1)
+			set = jb_push_or_free(set, jb_string(args[stdc_trailing_zeros(bits)]));
+		char const *const action = actions[forms[i].action].data;
+		struct json_object *sets = jb_get(takes, action);
+		if (sets ? jb_push(sets, set) : jb_set(takes, action, jb_push_or_free(json_object_new_array(), set))) {
+			json_object_put(takes);
+			takes = nullptr;
+		}
+	}
+	return takes;
 }
 
 /** A parse a slice at a time; zeroed to begin. */
