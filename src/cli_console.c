@@ -48,8 +48,8 @@ enum {
 
 	/* The columns of the status row that the track of the slime leaves to
 	 * the text where the row is wide: a space, a status of 59 bytes, the
-	 * key hints and a space. */
-	CLI_CONSOLE_STATUS_TEXT   = 120,
+	 * count of up to 32 queued lines (" | 32 queued") and a space. */
+	CLI_CONSOLE_STATUS_TEXT   = 73,
 };
 
 /* The bits of the flags of a console, besides CLI_CONSOLE_SIMPLE. */
@@ -1605,26 +1605,18 @@ static int
 cli_console_status (struct cli_console *console,
                     struct dstr        *output)
 {
-	static char const hint[] = " | Alt-Left/Right pane  Alt-Up/Down scroll  Ctrl-End follow";
 	static struct cstr_view const states[] = {CSTR_VIEW_INIT("ready"), CSTR_VIEW_INIT("working")};
 	struct cstr_view state = console->status.len ? util_text_view(&console->status)
 	                                             : states[flag_any(console->flags, CLI_CONSOLE_BUSY)];
-	char buffer[160];
+	char buffer[96];
 	struct cstr_view status = console->queue.used.n
-		? util_format_view(buffer, sizeof buffer, " %.*s | %zu queued%s", (int)state.len, state.data,
-		                   console->queue.used.n, hint)
-		: util_format_view(buffer, sizeof buffer, " %.*s%s", (int)state.len, state.data, hint);
-	size_t room = console->columns;
-	if (console->slime_timer.slot) {
-		/* The text ends a column before the track of the slime. The key
-		 * hints are last, and the text leaves them out if they do not
-		 * fit. */
-		room = console->slime.x0 - 1;
-		if (status.len > room)
-			status.len -= sizeof hint - 1;
-	}
-	return dstr_printf(output, "%s%-*.*s", cli_console_style(console, CLI_STYLE_STATUS), (int)console->columns,
-	                   (int)(status.len < room ? status.len : room), status.data) ? 0 : ENOMEM;
+		? util_format_view(buffer, sizeof buffer, " %.*s | %zu queued", (int)state.len, state.data,
+		                   console->queue.used.n)
+		: util_format_view(buffer, sizeof buffer, " %.*s", (int)state.len, state.data);
+	/* The text ends a column before the track of a slime. */
+	unsigned const room = console->slime_timer.slot ? console->slime.x0 - 1 : console->columns;
+	return dstr_printf(output, "%s%-*.*s", cli_console_style(console, CLI_STYLE_STATUS),
+	                   (int)console->columns, (int)room, status.data) ? 0 : ENOMEM;
 }
 
 /* Clear the stored rows and decorations of the screen, and mark all parts
