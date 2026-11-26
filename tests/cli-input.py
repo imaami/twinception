@@ -257,6 +257,12 @@ def check_catalog(binary):
         original = b"/tool git command=stale count=2"
         console.line(original + LEFT * 10 + b"\t\r", "/tool git command=status count=2\n")
         console.line(original + LEFT * 10 + b"\t\x1f\r", original.decode() + "\n")
+        # More than one match puts their common prefix in place of the token,
+        # and the space before the next argument stays.
+        ambiguous = b"/tool git command= count=2"
+        console.line(ambiguous + LEFT * 8 + b"\t\r", ambiguous.decode() + "\n")
+        console.line(ambiguous + LEFT * 8 + b"\tlo\t\r", "/tool git command=log count=2\n")
+        console.line(original + LEFT * 13 + b"\t\r", ambiguous.decode() + "\n")
         console.line(b"/tool absent\t\r", "/tool absent\n")
         console.finish()
     with Console(binary, "--catalog", inputrc='"\\C-t": possible-completions\n') as console:

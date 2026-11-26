@@ -656,6 +656,28 @@ cli_console_candidate (char const *text,
 	return copy;
 }
 
+/* Returns the length of the longest end of @p head that every match of
+ * @p matches after the first one ends with, outside of the first one, the
+ * longest common prefix of the others. The end starts at the first byte of
+ * a character.
+ */
+static size_t
+cli_console_shared_end (char *const     *matches,
+                        struct cstr_view head)
+{
+	size_t const prefix = strlen(matches[0]);
+	size_t n = head.len;
+	for (size_t i = 1; matches[i]; ++i) {
+		struct cstr_view const match = cstr_view(matches[i]);
+		size_t const rest = match.len > prefix ? match.len - prefix : 0;
+		size_t k = 0;
+		while (k < n && k < rest && match.data[match.len - 1 - k] == head.data[head.len - 1 - k])
+			++k;
+		n = k;
+	}
+	return head.len - util_char_start(head.data, head.len, head.len - n);
+}
+
 static char **
 cli_console_complete (char const *text,
                       int         start,
@@ -709,7 +731,14 @@ cli_console_complete (char const *text,
 	if (console->completion_count == 1 && flag_all(console->flags, tab))
 		flag_put(&console->flags, CLI_CONSOLE_TAB_FIRST | CLI_CONSOLE_TAB_UNIQUE, CLI_CONSOLE_TAB_UNIQUE);
 	if (rl_completion_type != '?') {
-		rl_point = (int)(line.len - suffix.len);
+		struct cstr_view const head = cstr_view_slice(line, 0, line.len - suffix.len);
+		/* A Tab completion ('\t', '!' or '@') puts the longest common
+		 * prefix of two or more matches in place of the line up to
+		 * rl_point. The end that all of them share after the prefix, such
+		 * as the space after a value, stays. */
+		size_t const kept = matches[1] && memchr("\t!@", rl_completion_type, 3)
+		                  ? cli_console_shared_end(matches, head) : 0;
+		rl_point = (int)(head.len - kept);
 	} else if (!matches[1]) {
 		/* A possible-completions request must never insert a unique match. */
 		char **listing = calloc(3, sizeof *listing);
