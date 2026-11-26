@@ -2241,15 +2241,16 @@ mcp_slot_respond (struct mcp_slot *slot,
 	mcp_req_reply(req);
 }
 
-/* Write a notification of progress @p value, saying @p text, which needs
- * no escaping, into the reply. A tool notification identifies a call;
- * other progress reports its current status.
+/* Write a notification of progress @p value, saying @p text, into the
+ * reply. A notification of a call names the tool @p tool in _meta. A
+ * notification without @p tool reports the status of the call. Neither
+ * text needs escaping.
  */
 static int
 mcp_req_notify_put (struct mcp_req   *req,
                     uint64_t          value,
                     struct cstr_view  text,
-                    bool              tool)
+                    struct cstr_view  tool)
 {
 	char num[UTIL_DECIMAL];
 	struct cstr_view const token = jb_wire(req->token);
@@ -2264,20 +2265,21 @@ mcp_req_notify_put (struct mcp_req   *req,
 		FRAG(",\"message\":\""),
 		BYTES(text),
 		FRAG("\",\"_meta\":{\"askai\":{\"kind\":\""),
-		tool ? FRAG("tool") : FRAG("status"),
+		tool.len ? FRAG("tool\",\"tool\":\"") : FRAG("status"),
+		BYTES(tool),
 		FRAG("\"}}}}\n\n"),
 	};
 	return mcp_req_put(req, p, array_size(p));
 }
 
 /* Send a notification of progress @p value, saying @p text, on the call's
- * event stream.
+ * event stream, for a call of @p tool, or of the status without @p tool.
  */
 static void
 mcp_req_notify (struct mcp_req   *req,
                 uint64_t          value,
                 struct cstr_view  text,
-                bool              tool)
+                struct cstr_view  tool)
 {
 	(void)mcp_req_flush(req, mcp_req_notify_put(req, value, text, tool));
 	req->noted = req->mcp->loop->now;
@@ -2381,7 +2383,7 @@ mcp_req_progress (struct mcp_req *req)
 	else
 		(void)util_text_printf(&text, "%s, %" PRIu32 " tokens",
 		                       progress & JOB_PROGRESS_THINKING ? "thinking" : "generating", tokens);
-	mcp_req_notify(req, value, util_text_view(&text), false);
+	mcp_req_notify(req, value, util_text_view(&text), cstr_view(nullptr));
 }
 
 /* Notify the client that a turn calls @p tool, a tool askai names, unless
@@ -2389,15 +2391,16 @@ mcp_req_progress (struct mcp_req *req)
  * the notification back.
  */
 static void
-mcp_req_notify_tool (struct mcp_req *req,
-                     char const     *tool)
+mcp_req_notify_tool (struct mcp_req   *req,
+                     struct cstr_view  tool)
 {
 	if (!req->token || flag_get(req->flags, MCP_REQ_SSE | MCP_REQ_BLOCKED) != MCP_REQ_SSE)
 		return;
 	char text[64];
 	mcp_req_notify(req, req->next_note, util_format_view(text, sizeof text, "turn %" PRIu32
-	                                                     ", calling %s", req->turn, tool),
-	               true);
+	                                                     ", calling %.*s", req->turn,
+	                                                     (int)tool.len, tool.data),
+	               tool);
 }
 
 /* Set the request's timer for the first due of a keep-alive, a notification
@@ -5676,7 +5679,7 @@ mcp_req_call_launch (struct mcp_req *req)
 	slot->tool = (uint8_t)id;
 	req->launched = k + 1;
 	hist_add(&mcp->counts->calls.lent[mcp_row_of(tool)->metric], 1);
-	mcp_req_notify_tool(req, tool->name.data);
+	mcp_req_notify_tool(req, tool->name);
 	loop_ready_bulk(mcp->loop, &req->step);
 	if (saved) {
 		int e = mcp_slot_replay(slot, saved);

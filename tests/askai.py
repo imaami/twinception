@@ -16505,6 +16505,12 @@ def check_turns(binary, up):
                 events = read_events(sock)
             messages = [e["params"]["message"] for _, e in events if "method" in e]
             assert "turn 1, calling git" in messages, messages
+            # A tool notification names the tool for clients such as askai-cli.
+            kinds = [(e["params"]["message"], e["params"]["_meta"]["askai"])
+                     for _, e in events if "method" in e]
+            assert ("turn 1, calling git", {"kind": "tool", "tool": "git"}) in kinds and \
+                all(meta == {"kind": "status"} for text, meta in kinds
+                    if text != "turn 1, calling git"), kinds
             progress = [e["params"]["progress"] for _, e in events if "method" in e]
             assert progress == sorted(set(progress)), progress
             assert events[-1][1]["result"]["content"][0]["text"] == "A", events

@@ -1138,7 +1138,9 @@ ends with the conversation: "bro wrote in the session. Give conversation
 continues the conversation, and one without starts a new conversation. The argument `conversation` needs `notes`. The
 argument `thread` of earlier versions is refused, and the refusal names
 `conversation`. With a `progressToken`, its notifications say the turn and the
-tool being called. `--max-turns` (32) bounds the turns: the turn before the
+tool being called, and the notification of a call also names the tool in
+`_meta.askai`, as `{"kind": "tool", "tool": "git"}`; other notifications
+have `{"kind": "status"}`. `--max-turns` (32) bounds the turns: the turn before the
 last is told so, and a last answer that still calls tools ends the call, as an
 error if it has no text. A `notifications/cancelled` from the caller of the
 call ends it too, at once, also while a tool runs or the turns doze. The
