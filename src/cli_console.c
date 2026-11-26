@@ -1613,53 +1613,56 @@ cli_console_panels (struct cli_console *console,
 	return 0;
 }
 
+/* CLI_CONSOLE_STATUS() is the format of the status row with the SGR
+ * sequences of the brackets, the turn, the text tokens and the reasoning
+ * tokens. CLI_CONSOLE_STATUS_COLOR() is the format with the 256-color
+ * numbers of the turn and of the two counts, and the brackets in color 110.
+ */
+#define CLI_CONSOLE_STATUS(frame, turn, text, reasoning)                                 \
+        frame "[ " turn "%4" PRIu32 frame " ][ " text "%7" PRIu64 frame " ][ " reasoning \
+        "%7" PRIu64 frame " ]%s"
+#define CLI_CONSOLE_STATUS_COLOR(turn, text, reasoning)                                  \
+        CLI_CONSOLE_STATUS("\033[0;38;5;110m", "\033[0;38;5;" #turn "m",                 \
+                           "\033[0;38;5;" #text "m", "\033[0;38;5;" #reasoning "m")
+
 /* Append the status row to @p output: the turn and the tokens of the text
  * and of the reasoning of the ask call, the count that grows in a brighter
- * style, then the count of the lines typed ahead, or "idle" while the
- * console is not busy. The text is cut at the end of the row, and spaces
- * fill the rest of the row. A slime crawls from the second column after
- * the text. Returns 0 or ENOMEM.
+ * color, then the count of the lines typed ahead, or "idle" while the
+ * console is not busy. The row is cut at the end of the screen, and spaces
+ * fill the rest of it. A slime crawls from the second column after the
+ * text. Returns 0 or an error number.
  */
 static int
 cli_console_status (struct cli_console *console,
                     struct dstr        *output)
 {
-	/* The counts: their widths, and their styles still and growing. */
-	static struct {
-		int            width;
-		enum cli_style styles[2];
-	} const counts[] = {
-		[CLI_CONSOLE_COUNT_TURN]      = {4, {CLI_STYLE_STATUS,       CLI_STYLE_STATUS_QUEUED}},
-		[CLI_CONSOLE_COUNT_TEXT]      = {7, {CLI_STYLE_TEXT_TOKENS,  CLI_STYLE_TEXT_TOKENS_GROWING}},
-		[CLI_CONSOLE_COUNT_REASONING] = {7, {CLI_STYLE_THINK_TOKENS, CLI_STYLE_THINK_TOKENS_GROWING}},
+	static char const *const formats[] = {
+		[CLI_CONSOLE_COUNT_TURN]      = CLI_CONSOLE_STATUS_COLOR(153, 245, 136),
+		[CLI_CONSOLE_COUNT_TEXT]      = CLI_CONSOLE_STATUS_COLOR(110, 231, 136),
+		[CLI_CONSOLE_COUNT_REASONING] = CLI_CONSOLE_STATUS_COLOR(110, 245, 220),
+		[CLI_CONSOLE_COUNT_NONE]      = CLI_CONSOLE_STATUS_COLOR(110, 245, 136),
 	};
-	static_assert(array_size(counts) == CLI_CONSOLE_COUNT_NONE);
 	struct cli_console_progress const *progress = &console->progress;
-	uint64_t const values[array_size(counts)] = {progress->turn, progress->text, progress->reasoning};
-	char digits[array_size(counts)][24];
+	bool const color = console->palette == cli_style_palette(true);
 	char queued[32];
-	struct cli_console_span spans[2 * array_size(counts) + 1];
-	for (size_t i = 0; i < array_size(counts); ++i) {
-		spans[2 * i] = cli_console_span(i ? CSTR_VIEW(" ][ ") : CSTR_VIEW("[ "), CLI_STYLE_STATUS);
-		spans[2 * i + 1] = cli_console_span(util_format_view(digits[i], sizeof digits[i], "%*" PRIu64,
-		                                                     counts[i].width, values[i]),
-		                                    counts[i].styles[progress->active == i]);
-	}
-	struct cstr_view tail = flag_any(console->flags, CLI_CONSOLE_BUSY) ? CSTR_VIEW(" ]") : CSTR_VIEW(" ] idle");
+	char const *tail = flag_any(console->flags, CLI_CONSOLE_BUSY) ? "" : " idle";
 	if (console->queue.used.n)
-		tail = util_format_view(queued, sizeof queued, " ] %zu queued", console->queue.used.n);
-	spans[array_size(spans) - 1] = cli_console_span(tail, CLI_STYLE_STATUS);
-	unsigned room = console->columns;
-	for (size_t i = 0; i < array_size(spans); ++i) {
-		struct cli_style_entry const *style = &console->palette[spans[i].style];
-		size_t const n = spans[i].text.len < room ? spans[i].text.len : room;
-		if (!dstr_cat_n(output, style->bytes, style->length) || !dstr_cat_n(output, spans[i].text.data, n))
-			return ENOMEM;
-		room -= (unsigned)n;
-	}
-	cli_console_crawl_track(console, console->columns - room + 1);
-	return dstr_printf(output, "%*s", (int)room, "") ? 0 : ENOMEM;
+		tail = util_format_view(queued, sizeof queued, " %zu queued", console->queue.used.n).data;
+	size_t const begin = dstr_len(output);
+	/* The format without colors is a literal in the call, so that GCC
+	 * checks the arguments against the conversions of all formats. */
+	if (!dstr_printf(output, color ? formats[progress->active] : CLI_CONSOLE_STATUS("", "", "", ""),
+	                 progress->turn, progress->text, progress->reasoning, tail))
+		return ENOMEM;
+	size_t width = 0;
+	int const e = cli_render_fit(output, begin, console->columns, &width);
+	if (!e)
+		cli_console_crawl_track(console, (unsigned)width + 1);
+	return e;
 }
+
+#undef CLI_CONSOLE_STATUS_COLOR
+#undef CLI_CONSOLE_STATUS
 
 /* Clear the stored rows and decorations of the screen, and mark all parts
  * dirty, so that the next frame paints the whole screen, the blank track of

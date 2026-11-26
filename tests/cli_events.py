@@ -800,7 +800,8 @@ def check_status_counts(cli):
     reasoning of an ask call. The count that grows is brighter, and once
     nothing runs, "idle" ends the row. The slime crawls from the second
     column after the counts, and a resize moves it to the same share of its
-    way on the new track."""
+    way on the new track. A screen narrower than the row cuts it at its last
+    column."""
     paused, resume = threading.Event(), threading.Event()
 
     def reply(request):
@@ -853,13 +854,18 @@ def check_status_counts(cli):
             styles = re.findall(rb"\x1b\[0;38;5;(\d+)m +(700|8762)", output)
             assert styles and dict((count, style) for style, count in styles) == \
                 {b"700": b"245", b"8762": b"136"}, styles
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 20, 0, 0))
+            terminal.proc.send_signal(signal.SIGWINCH)
+            row = re.search(rb"\x1b\[23;1H((?:\x1b\[[0-9;]*m|[^\x1b])*)", terminal.update(b"\x1b[23;1H"))
+            assert row and re.sub(rb"\x1b\[[0-9;]*m", b"", row[1]) == b"[   13 ][     700 ][", row
+            assert b"\x1b[0;38;5;245m    700" in row[1], row
             os.write(master, b"\x01\x0b/quit\r")
             assert terminal.proc.wait(timeout=3) == 0, terminal.proc.returncode
         finally:
             resume.set()
             terminal.close(slave)
-    print("cli events: status counts brighten as they grow, then idle; a resize moves the slime to its share: PASS",
-          flush=True)
+    print("cli events: status counts brighten as they grow, then idle; a resize moves the slime to its share; "
+          "a narrow screen cuts the row: PASS", flush=True)
 
 
 def check_chat_completion(cli):
