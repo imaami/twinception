@@ -2081,8 +2081,10 @@ that names the file and the reason.
 A tool definition may list in `_meta.askai.takes` the arguments that each
 action of the tool takes: an object with a member for each value of
 `action`, an array of the sets of the other arguments that the action
-takes, each an array of argument names. `askai-cli` completes only the
-arguments of the sets that fit the arguments already given. `jb_takes()`
+takes, each an array of argument names. The empty name stands for a call
+without `action`. `askai-cli` completes only the arguments of the sets that
+fit the arguments already given, and `action` only if such a set has an
+action. `jb_takes()`
 (`src/jb.h`) builds the member, also in a plugin. The upstream gets only the
 name, the description and the input schema of a tool, never its `_meta`.
 

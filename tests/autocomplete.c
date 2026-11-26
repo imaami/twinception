@@ -592,6 +592,13 @@ int main(void)
 	autocomplete_only(catalog, CSTR_VIEW("/tool shapes word=x action=r"), 28,
 	                  CSTR_VIEW("/tool shapes word=x action=rank "), 32);
 	AT("/tool shapes address=x action=rank", "/tool shapes address=x action=rankrank", 30);
+	/* The form with the empty action is a call without action: after note,
+	 * neither action nor another argument fits. */
+	HAS("/tool shapes ", "/tool shapes note=");
+	HAS("/tool shapes ", "/tool shapes action=");
+	EMPTY("/tool shapes note=x ");
+	EMPTY("/tool shapes note=x action=");
+	EMPTY("/tool shapes action=rank n");
 	/* A set with a name that is no property leaves loose without forms. */
 	HAS("/tool loose ", "/tool loose extra=");
 	EMPTY("/tool absent ");

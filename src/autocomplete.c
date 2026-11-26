@@ -1164,8 +1164,9 @@ autocomplete_action_fits (struct autocomplete_entry const *entry,
 }
 
 /* Returns the bits of the properties of @p entry that a call with the
- * arguments @p present and the action @p action can take: the action, and
- * the arguments of each form that fits.
+ * arguments @p present and the action @p action can take: the arguments of
+ * each form that fits, and the action if one of them has an action. A form
+ * with an empty action is a call without action.
  */
 static uint64_t
 autocomplete_allowed (struct autocomplete_entry const *entry,
@@ -1173,10 +1174,11 @@ autocomplete_allowed (struct autocomplete_entry const *entry,
                       struct cstr_view                 action)
 {
 	struct autocomplete_property const *selector = autocomplete_entry_property(entry, autocomplete_selector);
-	uint64_t allowed = selector ? UINT64_C(1) << (selector - entry->properties) : 0;
+	uint64_t const bit = selector ? UINT64_C(1) << (selector - entry->properties) : 0;
+	uint64_t allowed = 0;
 	for (size_t i = 0; i < entry->form_count; ++i)
 		if (autocomplete_form_fits(&entry->forms[i], present, action))
-			allowed |= entry->forms[i].args;
+			allowed |= entry->forms[i].args | (entry->forms[i].action.len ? bit : 0);
 	return allowed;
 }
 
