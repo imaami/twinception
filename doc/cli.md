@@ -138,7 +138,8 @@ A trailing `\` continues the prompt on another line. With
 it instead. A trailing `/` submits in either mode. Ctrl-D ends input.
 
 While an answer runs in full-screen mode, Enter queues prompts in submission
-order and opens a fresh draft. The status row shows the queued count. The
+order and opens a fresh draft. The status row shows the queued count after
+the counts, as `2 queued`. The
 queue holds up to 32 lines or 16 MiB; a full queue reports an error and keeps
 the draft editable. Local commands remain available with prompts queued: `/help`,
 `/history`, `/names`, and `/tools` display their current data immediately.
@@ -181,12 +182,23 @@ Input editing remains active. Both panes stay visible in narrow terminals,
 with their text rewrapped to fit. Terminals smaller than 8 columns or 6 rows
 show only input until resized; both buffers and the draft are retained.
 
-While an answer or a manual tool call runs, a slime crawls back and forth at
-the end of the status row (`src/cli_slime.c`), 20 frames a second. Its track
-is the columns after the first 73 of the row, or the last third of the row
-if that is more, and terminals narrower than 36 columns have no slime. The
-status row shows no key hints; `/help` lists the keys. With `--color off` or
-`NO_COLOR` the slime is drawn in the terminal's color and leaves no trail.
+The status row shows three counts of the ask call, such as
+`[   13 ][     655 ][    8762 ]`: the turn, the tokens of the text and the
+tokens of the reasoning of all its turns so far, as the server reports them
+in its progress notifications. The text tokens are grey and the reasoning tokens
+amber, and the count that grows is drawn in a brighter shade. While a turn
+waits in the server's queue for the upstream, the turn is the bright count.
+While tools run, nothing is bright. The counts of an answer stay until the
+next answer starts again from turn 1. When nothing runs, `idle` follows the
+counts. The status row shows no key hints; `/help` lists the keys.
+
+While an answer or a manual tool call runs, a slime crawls back and forth on
+the status row (`src/cli_slime.c`), 20 frames a second. Its track starts at
+the second column after the text of the row and ends at the end of the row,
+and terminals narrower than 43 columns have no slime. A resize, or a change
+in the width of the text, moves the slime to the same share of the way on
+its new track. With `--color off` or `NO_COLOR` neither the counts nor the
+slime are colored, and the slime leaves no trail.
 
 Each scrollback retains up to 10,000 logical lines or 16 MiB of text.
 Older transcript content is evicted independently of drafts and
@@ -367,11 +379,12 @@ A call of a tool is a line such as `* git`, and calls of one tool in a row
 share one line, such as `* git x5`. The line is written when the row ends:
 at a call of another tool, at the text of the answer, or at the end of the
 answer. In full-screen mode the reasoning has a pane of its own and does not
-end a row. A manual `/tool` call shows its line before its result. The status
-of an answer, such as `turn 2, generating, 516 tokens`, replaces `working` in
-the status row of full-screen mode. The other modes do not show it, so the
-status never splits reasoning or text. Multiple connections, IRC-style windows
-and private thought-stream tabs are future UI work.
+end a row. A manual `/tool` call shows its line before its result. The
+counts of an answer appear in the status row of full-screen mode. The other
+modes do not show them, so they never split reasoning or text. A server
+built before the counts were added to its notifications leaves them at 0.
+Multiple connections, IRC-style windows and private thought-stream tabs are
+future UI work.
 
 ## Initial prompts and scripts
 

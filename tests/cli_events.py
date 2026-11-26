@@ -216,6 +216,38 @@ def check_descriptor_exhaustion(cli):
 # spaces.
 SLIME = re.compile(rb"\x1b\[23;1H(?:\x1b\[[0-9;]*[CGm]|\xe2\x96[\x81-\x88]| )+")
 
+# The status row of a client that is not busy and has no counts.
+IDLE = "[    0 ][       0 ][       0 ] idle"
+
+# The first frame of a new slime, which starts at the left end of its track
+# from column 32 as the client becomes busy.
+BUSY = b"\x1b[23;1H\x1b[32G"
+
+
+def slime_body(frames, cells):
+    """Apply frames of the slime, matches of SLIME, to cells, a dict of the
+    columns from 1 that show a block glyph and their colours. Return the
+    columns of the body, the cells not in a colour of the trail."""
+    for frame in frames:
+        column, ink = 1, 0
+        for token in re.findall(rb"\x1b\[[0-9;]*[CGHm]|\xe2\x96[\x81-\x88]| ", frame):
+            if token.endswith(b"G"):
+                column = int(token[2:-1] or 1)
+            elif token.endswith(b"C"):
+                column += int(token[2:-1] or 1)
+            elif token.endswith(b"H"):
+                column = 1
+            elif token.endswith(b"m"):
+                codes = token[2:-1].split(b";")
+                ink = int(codes[-1]) if len(codes) == 3 else 0
+            elif token == b" ":
+                cells.pop(column, None)
+                column += 1
+            else:
+                cells[column] = ink
+                column += 1
+    return sorted(column for column, ink in cells.items() if ink not in (22, 28, 236))
+
 
 class Terminal:
     """Keep unread PTY bytes between phase markers, including coalesced redraws."""
@@ -486,7 +518,7 @@ def check_tui_drafts(cli):
             os.write(master, b"\r")
             terminal.expect(b"answer-two")
             assert prompts == ["first", draft + "\n"], prompts
-            terminal.expect(b"ready")
+            terminal.expect(b"idle")
 
             restored = b"undo recovered"
             os.write(master, b"\x1b[200~" + restored + b"\x1b[201~")
@@ -496,7 +528,7 @@ def check_tui_drafts(cli):
             os.write(master, b"\x1f\r")
             terminal.expect(b"answer-three")
             assert prompts[-1] == restored.decode() + "\n", prompts
-            terminal.expect(b"ready")
+            terminal.expect(b"idle")
             os.write(master, b"/exit\r")
             assert proc.wait(timeout=5) == 0, proc.returncode
             assert termios.tcgetattr(slave) == before, "exit did not restore terminal settings"
@@ -533,7 +565,7 @@ def check_partial_paste(cli):
         try:
             terminal.expect(b"\x1b[?2004h")
             assert arrived.wait(5), "CLI did not submit the first prompt"
-            terminal.update(b"working")
+            terminal.update(BUSY)
             os.write(master, b"z")
             typed = SLIME.sub(b"", terminal.draft(b"z", point=1))
             positions = re.findall(rb"\x1b\[(\d+);(\d+)H", typed)
@@ -644,10 +676,11 @@ def check_keyboard(cli):
             type_text(b"hi")
             os.write(master, b"\r\n")
             assert arrived.wait(5), "CRLF did not submit hi"
-            terminal.expect(b"working")
+            terminal.expect(BUSY)
             os.write(master, b"\r\n\x14")
             terminal.draft(b"")
-            assert b"working" in terminal.rows[23], "blank Enter occupied the pending input slot"
+            assert b"idle" not in terminal.rows[23] and b"queued" not in terminal.rows[23], \
+                "blank Enter occupied the pending input slot"
             editable("while first answer is pending")
             type_text(b"queued second")
             # Exercise the inputrc accept-line binding as well as the CLI's
@@ -681,12 +714,12 @@ def check_keyboard(cli):
             release.set()
             terminal.expect(b"keyboard-answer-one")
             terminal.expect(b"keyboard-answer-two")
-            terminal.expect(b"ready")
+            terminal.expect(b"idle")
             editable("after the queued answer")
             assert prompts == ["hi\n", "queued second\n"], prompts
             os.write(master, b"\r")
             terminal.expect(b"keyboard-answer-three")
-            terminal.expect(b"ready")
+            terminal.expect(b"idle")
             editable("after third answer")
             assert prompts == ["hi\n", "queued second\n", "habYc\n"], prompts
             type_text(b"h")
@@ -750,7 +783,7 @@ def check_queued_input(cli):
                     release[index].set()
                     terminal.expect(f"queue-answer-{index}".encode())
                 if macro:
-                    terminal.expect(b"ready")
+                    terminal.expect(b"idle")
                     os.write(master, b"\x04")
                 assert proc.wait(timeout=5) == 0, (macro, proc.returncode)
                 assert prompts == expected, (macro, prompts)
@@ -760,6 +793,73 @@ def check_queued_input(cli):
                     event.set()
                 terminal.close(slave)
     print("cli events: queued input precedes EOF and multi-line macros resume in order: PASS", flush=True)
+
+
+def check_status_counts(cli):
+    """The status row counts the turn and the tokens of the text and of the
+    reasoning of an ask call. The count that grows is brighter, and once
+    nothing runs, "idle" ends the row. The slime crawls from the second
+    column after the counts, and a resize moves it to the same share of its
+    way on the new track."""
+    paused, resume = threading.Event(), threading.Event()
+
+    def reply(request):
+        token = request["params"]["_meta"]["progressToken"]
+
+        def note(text, reasoning, **more):
+            meta = {"kind": "status", "turn": 13, "tokens": {"text": text, "reasoning": reasoning}}
+            return (None, {"jsonrpc": "2.0", "method": "notifications/progress", "params": {
+                "progressToken": token, "progress": text + reasoning, "message": "status",
+                "_meta": {"askai": meta | more}}})
+
+        result = (None, {"jsonrpc": "2.0", "id": request["id"], "result": {
+            "content": [{"type": "text", "text": "counted"}]}})
+        return 200, "text/event-stream", [sse_wire([note(655, 8762, latest="reasoning")]),
+                                          lambda: (paused.set(), resume.wait(20)),
+                                          sse_wire([note(700, 8762, latest="text"), result])]
+
+    def share(body, columns):
+        # Where the middle of the body is on the track from column 32.
+        return ((body[0] + body[-1]) / 2 - 32) / (columns - 31)
+
+    def crawl(output, columns, done):
+        cells = {}
+        body = slime_body(SLIME.findall(output), cells)
+        deadline = time.monotonic() + 15
+        while not body or not done(share(body, columns)):
+            assert time.monotonic() < deadline, (columns, cells)
+            body = slime_body(SLIME.findall(terminal.drain(0.1)), cells)
+        assert all(32 <= column <= columns for column in cells), (columns, cells)
+        return share(body, columns)
+
+    with Peer(reply) as peer:
+        terminal, master, slave, before = Terminal.spawn(
+            cli, peer.socket, "--no-history", "--prompt", "count", columns=60, color="on")
+        try:
+            assert paused.wait(5), "the request did not reach the peer"
+            output = terminal.update(b"8762")
+            assert bytes(terminal.rows[23]).rstrip() == b"[   13 ][     655 ][    8762 ]", terminal.rows[23]
+            assert re.search(rb"\x1b\[0;38;5;245m +655\x1b\[0;38;5;110m \]\[ \x1b\[0;38;5;220m +8762",
+                             output), output
+            before_resize = crawl(output, 60, lambda at: at >= 0.3)
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
+            terminal.proc.send_signal(signal.SIGWINCH)
+            terminal.expect(b"\x1b[1;1H")
+            after_resize = crawl(terminal.drain(), 100, lambda at: True)
+            assert abs(after_resize - before_resize) < 0.15, (before_resize, after_resize)
+            resume.set()
+            output = terminal.update(b"counted", b"idle")
+            assert bytes(terminal.rows[23]).rstrip() == b"[   13 ][     700 ][    8762 ] idle", terminal.rows[23]
+            styles = re.findall(rb"\x1b\[0;38;5;(\d+)m +(700|8762)", output)
+            assert styles and dict((count, style) for style, count in styles) == \
+                {b"700": b"245", b"8762": b"136"}, styles
+            os.write(master, b"\x01\x0b/quit\r")
+            assert terminal.proc.wait(timeout=3) == 0, terminal.proc.returncode
+        finally:
+            resume.set()
+            terminal.close(slave)
+    print("cli events: status counts brighten as they grow, then idle; a resize moves the slime to its share: PASS",
+          flush=True)
 
 
 def check_chat_completion(cli):
@@ -883,7 +983,7 @@ def check_fullscreen_colors(cli):
                                    for code in codes), (color, no_color, output)
 
             try:
-                output = terminal.update(answer.encode(), b"ready")
+                output = terminal.update(answer.encode(), b"idle")
                 check(output)
                 os.write(master, b"/tools absent\r")
                 output += terminal.update(b"No accessible tool named absent")
@@ -916,7 +1016,7 @@ def check_terminal_cells(cli):
                 terminal.resize(columns)
                 terminal.text("resize-marker")
             marker = "resize-marker" if columns == 40 else "cells-done"
-            output = terminal.screen(lambda rows: marker in "\n".join(rows) and rows[-2].strip() == "ready",
+            output = terminal.screen(lambda rows: marker in "\n".join(rows) and rows[-2].strip() == IDLE,
                                      "wrapped output did not redraw")
             expected = []
             for text in lines:
@@ -1000,11 +1100,12 @@ def check_panels(cli):
                 assert cursor == "2,23", ("startup cursor was not after the bottom prompt", cursor, early)
                 release.set()
                 output = terminal.screen(lambda rows: "answer-49" in "\n".join(pane(rows, 0)) and
-                                         "reason-49" in "\n".join(pane(rows, 1)) and "ready" in rows[-2],
+                                         "reason-49" in "\n".join(pane(rows, 1)) and "idle" in rows[-2],
                                          "answer and reasoning did not reach separate panes")
                 assert "Conversation" in output[0] and "Reasoning" in output[0], output
-                # The status row shows the state alone; /help lists the keys.
-                assert output[-2].strip() == "ready", output
+                # The status row shows the counts and the state; /help lists
+                # the keys.
+                assert output[-2].strip() == IDLE, output
                 assert not any("reason-" in row for row in pane(output, 0)), output
                 assert not any("answer-" in row for row in pane(output, 1)), output
                 assert all(len(row) == 100 and row[0] == row[59] == row[-1] == "│"
@@ -1031,7 +1132,7 @@ def check_panels(cli):
                 terminal.text("next panel turn")
                 terminal.keys("Enter")
                 updated = terminal.screen(lambda rows: "answer-new" in "\n".join(pane(rows, 0)) and
-                                          "ready" in rows[-2], "conversation did not follow its new answer")
+                                          "idle" in rows[-2], "conversation did not follow its new answer")
                 assert pane(updated, 1) == right, "new reasoning moved a scrolled viewport"
                 for end in (["C-End"], ["-H", "1b", "5b", "34", "3b", "35", "7e"],
                             ["-H", "1b", "5b", "38", "3b", "35", "7e"], ["-H", "1b", "5b", "38", "5e"]):
@@ -1166,10 +1267,10 @@ def check_busy_commands(cli):
         proc = terminal.proc
         try:
             terminal.expect(b"history-answer-visible")
-            terminal.expect(b"ready")
+            terminal.expect(b"idle")
             os.write(master, b"held-generation\r")
             assert arrived.wait(5), "generation did not start"
-            terminal.expect(b"working")
+            terminal.expect(BUSY)
             requests = len(peer.requests)
             for queued in (False, True):
                 if queued:
@@ -1192,7 +1293,7 @@ def check_busy_commands(cli):
             release.set()
             terminal.expect(b"held-answer-finished")
             terminal.expect(b"queued-answer-finished")
-            terminal.expect(b"ready")
+            terminal.expect(b"idle")
             assert prompts == ["history-seed", "held-generation\n", "queued-prompt-preserved\n"], prompts
             os.write(master, b"/quit\r")
             assert proc.wait(timeout=3) == 0, proc.returncode
@@ -1425,10 +1526,10 @@ def check_interrupt_commands(cli):
                 for marker, entered in ((b"first-seed-answer", b"second-seed\r"),
                                         (b"second-seed-answer", b"held-turn\r")):
                     terminal.expect(marker)
-                    terminal.expect(b"ready")
+                    terminal.expect(b"idle")
                     os.write(master, entered)
                 assert arrived.wait(5), "generation did not start"
-                terminal.expect(b"working")
+                terminal.expect(BUSY)
                 if name == b"/clear":
                     os.write(master, b"after-clear\r")
                     terminal.expect(b"1 queued")
@@ -1437,7 +1538,7 @@ def check_interrupt_commands(cli):
                 if name == b"/clear":
                     terminal.expect(b"Conversation cleared.", timeout=2)
                 terminal.expect(b"replacement-answer", timeout=2)
-                terminal.expect(b"ready")
+                terminal.expect(b"idle")
                 assert not release.is_set(), "held response was released before interruption completed"
                 assert len(calls) == 4, (name, calls)
                 arguments = calls[3]["params"]["arguments"]
@@ -1451,7 +1552,7 @@ def check_interrupt_commands(cli):
                     assert arguments["messages"] == first, arguments
                     os.write(master, b"history-probe\r")
                     terminal.expect(b"probe-answer")
-                    terminal.expect(b"ready")
+                    terminal.expect(b"idle")
                     assert len(calls) == 5, calls
                     probe = calls[4]["params"]["arguments"]
                     assert probe["prompt"] == "history-probe\n", probe
@@ -1570,7 +1671,7 @@ def check_blocked_worker(cli):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        raise SystemExit("usage: cli_events.py ASKAI_CLI [sticky lock saved-lock fds exhaust tui partial keys queue overflow mentions colors cells panels summaries commands concurrent quit interrupt files slow worker ...]")
+        raise SystemExit("usage: cli_events.py ASKAI_CLI [sticky lock saved-lock fds exhaust tui partial keys queue overflow counts mentions colors cells panels summaries commands concurrent quit interrupt files slow worker ...]")
     if not unix_available():
         raise SystemExit(0)
     cli = os.path.realpath(sys.argv[1])
@@ -1578,7 +1679,7 @@ if __name__ == "__main__":
               "saved-lock": check_saved_command_lock,
               "fds": check_descriptor_limit, "exhaust": check_descriptor_exhaustion,
               "tui": check_tui_drafts, "partial": check_partial_paste, "keys": check_keyboard,
-              "queue": check_queued_input, "overflow": check_queue_overflow,
+              "queue": check_queued_input, "overflow": check_queue_overflow, "counts": check_status_counts,
               "mentions": check_chat_completion, "colors": check_fullscreen_colors,
               "cells": check_terminal_cells, "panels": check_panels, "summaries": check_tool_summaries,
               "commands": check_busy_commands, "concurrent": check_concurrent_tools, "quit": check_busy_quit,

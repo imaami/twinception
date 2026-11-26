@@ -26,22 +26,38 @@ cli_stream_fini (struct cli_stream *stream)
 }
 
 /* Show the progress of params, the parameters of a progress notification,
- * if it is for the token of the stream: a call of a tool in the line of the
- * calls, and other progress in the status row.
+ * if it is for the token of the stream: the turn and the tokens in the
+ * status row, and a call of a tool in the line of the calls. The count that
+ * grows is the turn while it waits in the server's queue, or else the
+ * tokens of the kind named latest, if any.
  */
 static int
 cli_stream_progress (struct cli_stream  *stream,
                      struct json_object *params)
 {
+	/* The kinds of the tokens, in the order of their counts. */
+	static struct cstr_view const kinds[] = {CSTR_VIEW_INIT("text"), CSTR_VIEW_INIT("reasoning")};
+	static_assert(CLI_CONSOLE_COUNT_TEXT + array_size(kinds) == CLI_CONSOLE_COUNT_NONE);
 	struct cstr_view token = jb_view(jb_get(params, "progressToken"));
 	struct cstr_view message = jb_view(jb_get(params, "message"));
 	if (!token.data || !message.data || !cstr_view_equal(token, stream->token))
 		return 0;
 	struct json_object *meta = jb_get(jb_get(params, "_meta"), "askai");
-	if (!jb_is(jb_get(meta, "kind"), "tool")) {
-		cli_console_set_status(stream->ui.console, message);
-		return 0;
+	struct json_object *tokens = jb_get(meta, "tokens");
+	int e = 0;
+	/* A server without the member tokens shows no counts. */
+	if (tokens) {
+		size_t const latest = cstr_view_index(kinds, array_size(kinds), jb_view(jb_get(meta, "latest")));
+		e = cli_console_set_progress(stream->ui.console, (struct cli_console_progress){
+			.text = jb_uint(jb_get(tokens, "text"), 0),
+			.reasoning = jb_uint(jb_get(tokens, "reasoning"), 0),
+			.turn = (uint32_t)jb_uint(jb_get(meta, "turn"), 0),
+			.active = jb_get(meta, "place") ? CLI_CONSOLE_COUNT_TURN
+			                                : (enum cli_console_count)(CLI_CONSOLE_COUNT_TEXT + latest),
+		});
 	}
+	if (e || !jb_is(jb_get(meta, "kind"), "tool"))
+		return e;
 	/* A server without the member tool names the tool only in the
 	 * message. */
 	struct cstr_view tool = jb_view(jb_get(meta, "tool"));

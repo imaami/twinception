@@ -107,7 +107,6 @@ cli_ui_finish (struct cli_ui *ui)
 	if (!e)
 		e = cli_ui_calls(ui);
 	ui->calls = 0;
-	cli_console_set_status(ui->console, cstr_view(nullptr));
 	return e;
 }
 

@@ -51,8 +51,8 @@ cli_ui_push (struct cli_ui    *ui,
              bool              thinking,
              struct cstr_view  text);
 
-/** Ends the output of the turn: the reasoning, the line of the calls in a
- *  row, and the status in the status row.
+/** Ends the output of the turn: the reasoning and the line of the calls in
+ *  a row.
  */
 extern int
 cli_ui_finish (struct cli_ui *ui);

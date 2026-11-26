@@ -22,6 +22,11 @@
         X(TITLE,                "\033[0;38;5;229m") \
         X(TITLE_INACTIVE,       "\033[0;38;5;153m") \
         X(STATUS,               "\033[0;38;5;110m") \
+        X(STATUS_QUEUED,        "\033[0;38;5;153m") \
+        X(TEXT_TOKENS,          "\033[0;38;5;245m") \
+        X(TEXT_TOKENS_GROWING,  "\033[0;38;5;231m") \
+        X(THINK_TOKENS,         "\033[0;38;5;136m") \
+        X(THINK_TOKENS_GROWING, "\033[0;38;5;220m") \
         X(TOOL,                 "\033[0;38;5;215m") \
         X(COMPLETION_COMMAND,   "\033[0;38;5;81m")  \
         X(COMPLETION_TOOL,      "\033[0;38;5;114m") \

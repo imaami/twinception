@@ -108,7 +108,11 @@ int main(void)
 	assert(console && !e);
 	{
 		struct cli_ui display = cli_ui(console);
-		cli_console_set_status(console, CSTR_VIEW("turn 1, generating, 0 tokens"));
+		assert(!cli_console_set_progress(console, (struct cli_console_progress){
+			.turn = 1, .reasoning = 3, .active = CLI_CONSOLE_COUNT_REASONING}));
+		assert(cli_console_set_progress(console, (struct cli_console_progress){
+			.active = CLI_CONSOLE_COUNT_NONE + 1}) == EINVAL);
+		assert(cli_console_set_progress(nullptr, (struct cli_console_progress){}) == EINVAL);
 		assert(!cli_ui_push(&display, true, CSTR_VIEW("The")));
 		assert(!cli_ui_push(&display, true, CSTR_VIEW(" user")));
 		assert(!cli_ui_push(&display, true, CSTR_VIEW(" says hi.")));

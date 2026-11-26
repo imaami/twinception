@@ -7,6 +7,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <locale.h>
 #include <readline/history.h>
 #include <readline/readline.h>
@@ -45,11 +46,6 @@ enum {
 	CLI_CONSOLE_TAB_INTERVAL  = 400 * MS,
 	CLI_CONSOLE_ROWS          = 256,
 	CLI_CONSOLE_COLUMNS       = 512,
-
-	/* The columns of the status row that the track of the slime leaves to
-	 * the text where the row is wide: a space, a status of 59 bytes, the
-	 * count of up to 32 queued lines (" | 32 queued") and a space. */
-	CLI_CONSOLE_STATUS_TEXT   = 73,
 };
 
 /* The bits of the flags of a console, besides CLI_CONSOLE_SIMPLE. */
@@ -218,9 +214,10 @@ struct cli_console {
 	struct dstr                      clean;  /**< sanitized output */
 	struct dstr                      screen; /**< a frame of the full-screen UI */
 	struct cli_console_lines         queue;  /**< the accepted lines */
-	struct cli_slime                 slime;  /**< crawls along the end of the
-	                                              status row while the console
-	                                              is busy */
+	struct cli_slime                 slime;  /**< crawls along the status row
+	                                              after its text while the
+	                                              console is busy; cols is 0
+	                                              when the console is not */
 	struct loop_timer                slime_timer;  /**< the next frame of the
 	                                                    slime, in the heap of
 	                                                    the loop while the
@@ -242,7 +239,7 @@ struct cli_console {
 	struct termios                   initial_state;
 	struct termios                   resume_state;
 	struct cli_console_completion    completions[AUTOCOMPLETE_MATCHES];
-	UTIL_TEXT(60)                    status;  /**< cli_console_set_status() */
+	struct cli_console_progress      progress;  /**< cli_console_set_progress() */
 	enum cli_style                   display;
 	enum cli_console_pane_id         focused;
 	int                              pending_input;
@@ -1165,11 +1162,13 @@ cli_console_slime_due (struct loop       *loop,
 }
 
 /* Stop the slime, if it crawls, and draw all of the status row again,
- * which blanks the track of the slime.
+ * which blanks the track of the slime. The next busy console starts a new
+ * slime.
  */
 static void
 cli_console_crawl_stop (struct cli_console *console)
 {
+	console->slime.cols = 0;
 	if (!console->slime_timer.slot)
 		return;
 	(void)loop_timer_stop(&console->loop->loop, &console->slime_timer);
@@ -1177,25 +1176,37 @@ cli_console_crawl_stop (struct cli_console *console)
 	console->dirty |= CLI_CONSOLE_PAINT_STATUS;
 }
 
-/* Start a slime on a blank track at the end of the status row: the columns
- * that CLI_CONSOLE_STATUS_TEXT leaves free, or a third of the row if that
- * is more. If the track is too narrow, stop the slime instead.
+/* Start, move or stop the slime of a busy console, so that it crawls on the
+ * track from column @p x0 of the status row, the first column being 0, to
+ * the end of the row. A slime moves to a new track at the same share of the
+ * way between its walls. On a track narrower than CLI_SLIME_MIN_COLS it
+ * stops, and moves to the next track that is wide enough. Where the slime
+ * starts, moves or stops, all of the status row is drawn again, which
+ * blanks the cells of the slime.
  */
 static void
-cli_console_crawl_start (struct cli_console *console)
+cli_console_crawl_track (struct cli_console *console,
+                         unsigned            x0)
 {
-	unsigned const rest = console->columns > CLI_CONSOLE_STATUS_TEXT
-	                      ? console->columns - CLI_CONSOLE_STATUS_TEXT : 0;
-	unsigned const cols = rest > console->columns / 3 ? rest : console->columns / 3;
-	int e;
-	struct cli_slime const slime = cli_slime(console->columns - cols, cols, (uint32_t)loop_clock(),
-	                                         console->palette == cli_style_palette(true), &e);
-	if (e || loop_timer_set(&console->loop->loop, &console->slime_timer, slime.due)) {
-		cli_console_crawl_stop(console);
+	struct cli_slime *slime = &console->slime;
+	unsigned const cols = x0 < console->columns ? console->columns - x0 : 0;
+	bool const fits = flag_any(console->flags, CLI_CONSOLE_BUSY) && cols >= CLI_SLIME_MIN_COLS;
+	if (console->slime_timer.slot ? fits && slime->x0 == x0 && slime->cols == cols : !fits)
 		return;
+	dstr_clear(&console->decorations[2]);
+	if (fits) {
+		int e = 0;
+		if (slime->cols)
+			e = cli_slime_move(slime, x0, cols);
+		else
+			*slime = cli_slime(x0, cols, (uint32_t)loop_clock(),
+			                   console->palette == cli_style_palette(true), &e);
+		if (!e && !loop_timer_set(&console->loop->loop, &console->slime_timer, slime->due)) {
+			console->dirty |= CLI_CONSOLE_PAINT_SLIME;
+			return;
+		}
 	}
-	console->slime = slime;
-	console->dirty |= CLI_CONSOLE_PAINT_STATUS;
+	(void)loop_timer_stop(&console->loop->loop, &console->slime_timer);
 }
 
 /* Append the frame of the slime to @p output, if one is due, and set the
@@ -1250,6 +1261,7 @@ cli_console_create (uint32_t         flags,
 		.queue.lines       = list(&console->queue.lines),
 		.palette           = cli_style_palette(flags & CLI_CONSOLE_COLOR),
 		.slime_timer.fn    = cli_console_slime_due,
+		.progress.active   = CLI_CONSOLE_COUNT_NONE,
 		.history_last      = dstr(nullptr),
 		.rows              = 24,
 		.columns           = 80,
@@ -1601,28 +1613,58 @@ cli_console_panels (struct cli_console *console,
 	return 0;
 }
 
+/* Append the status row to @p output: the turn and the tokens of the text
+ * and of the reasoning of the ask call, the count that grows in a brighter
+ * style, then the count of the lines typed ahead, or "idle" while the
+ * console is not busy. The text is cut at the end of the row, and spaces
+ * fill the rest of the row. A slime crawls from the second column after
+ * the text. Returns 0 or ENOMEM.
+ */
 static int
 cli_console_status (struct cli_console *console,
                     struct dstr        *output)
 {
-	static struct cstr_view const states[] = {CSTR_VIEW_INIT("ready"), CSTR_VIEW_INIT("working")};
-	struct cstr_view state = console->status.len ? util_text_view(&console->status)
-	                                             : states[flag_any(console->flags, CLI_CONSOLE_BUSY)];
-	char buffer[96];
-	struct cstr_view status = console->queue.used.n
-		? util_format_view(buffer, sizeof buffer, " %.*s | %zu queued", (int)state.len, state.data,
-		                   console->queue.used.n)
-		: util_format_view(buffer, sizeof buffer, " %.*s", (int)state.len, state.data);
-	/* The text ends a column before the track of a slime. */
-	unsigned const room = console->slime_timer.slot ? console->slime.x0 - 1 : console->columns;
-	return dstr_printf(output, "%s%-*.*s", cli_console_style(console, CLI_STYLE_STATUS),
-	                   (int)console->columns, (int)room, status.data) ? 0 : ENOMEM;
+	/* The counts: their widths, and their styles still and growing. */
+	static struct {
+		int            width;
+		enum cli_style styles[2];
+	} const counts[] = {
+		[CLI_CONSOLE_COUNT_TURN]      = {4, {CLI_STYLE_STATUS,       CLI_STYLE_STATUS_QUEUED}},
+		[CLI_CONSOLE_COUNT_TEXT]      = {7, {CLI_STYLE_TEXT_TOKENS,  CLI_STYLE_TEXT_TOKENS_GROWING}},
+		[CLI_CONSOLE_COUNT_REASONING] = {7, {CLI_STYLE_THINK_TOKENS, CLI_STYLE_THINK_TOKENS_GROWING}},
+	};
+	static_assert(array_size(counts) == CLI_CONSOLE_COUNT_NONE);
+	struct cli_console_progress const *progress = &console->progress;
+	uint64_t const values[array_size(counts)] = {progress->turn, progress->text, progress->reasoning};
+	char digits[array_size(counts)][24];
+	char queued[32];
+	struct cli_console_span spans[2 * array_size(counts) + 1];
+	for (size_t i = 0; i < array_size(counts); ++i) {
+		spans[2 * i] = cli_console_span(i ? CSTR_VIEW(" ][ ") : CSTR_VIEW("[ "), CLI_STYLE_STATUS);
+		spans[2 * i + 1] = cli_console_span(util_format_view(digits[i], sizeof digits[i], "%*" PRIu64,
+		                                                     counts[i].width, values[i]),
+		                                    counts[i].styles[progress->active == i]);
+	}
+	struct cstr_view tail = flag_any(console->flags, CLI_CONSOLE_BUSY) ? CSTR_VIEW(" ]") : CSTR_VIEW(" ] idle");
+	if (console->queue.used.n)
+		tail = util_format_view(queued, sizeof queued, " ] %zu queued", console->queue.used.n);
+	spans[array_size(spans) - 1] = cli_console_span(tail, CLI_STYLE_STATUS);
+	unsigned room = console->columns;
+	for (size_t i = 0; i < array_size(spans); ++i) {
+		struct cli_style_entry const *style = &console->palette[spans[i].style];
+		size_t const n = spans[i].text.len < room ? spans[i].text.len : room;
+		if (!dstr_cat_n(output, style->bytes, style->length) || !dstr_cat_n(output, spans[i].text.data, n))
+			return ENOMEM;
+		room -= (unsigned)n;
+	}
+	cli_console_crawl_track(console, console->columns - room + 1);
+	return dstr_printf(output, "%*s", (int)room, "") ? 0 : ENOMEM;
 }
 
 /* Clear the stored rows and decorations of the screen, and mark all parts
- * dirty, so that the next frame paints the whole screen. A busy console
- * starts its slime again, on a track for the columns that the screen has
- * now.
+ * dirty, so that the next frame paints the whole screen, the blank track of
+ * the slime too. The status row moves the slime to the track of the
+ * columns that the screen has now.
  */
 static void
 cli_console_reset (struct cli_console *console)
@@ -1632,8 +1674,7 @@ cli_console_reset (struct cli_console *console)
 	for (size_t i = 0; i < array_size(console->panes); ++i)
 		for (size_t row = 0; row < array_size(console->panes[i].rows); ++row)
 			dstr_clear(&console->panes[i].rows[row]);
-	if (flag_any(console->flags, CLI_CONSOLE_BUSY))
-		cli_console_crawl_start(console);
+	cli_slime_blank(&console->slime);
 	console->dirty = CLI_CONSOLE_PAINT_ALL;
 	console->cursor_column = 0;
 }
@@ -1714,13 +1755,12 @@ cli_console_busy (struct cli_console *console,
 {
 	flag_put(&console->flags, FLAG_WHEN, busy);
 	console->dirty |= CLI_CONSOLE_PAINT_STATUS;
-	if (!busy || !flag_any(console->flags, CLI_CONSOLE_FULLSCREEN)) {
-		cli_console_crawl_stop(console);
-		return 0;
-	}
-	if (!console->slime_timer.slot)
-		cli_console_crawl_start(console);
-	return cli_console_editor_start(console);
+	if (busy && flag_any(console->flags, CLI_CONSOLE_FULLSCREEN))
+		return cli_console_editor_start(console);
+	/* No count grows once the work has ended. */
+	console->progress.active = CLI_CONSOLE_COUNT_NONE;
+	cli_console_crawl_stop(console);
+	return 0;
 }
 
 /* Pass the next key of the input to Readline. Then restore a draft that a
@@ -2123,22 +2163,18 @@ cli_console_flush (struct cli_console *console)
 }
 
 
-void
-cli_console_set_status (struct cli_console *console,
-                        struct cstr_view    text)
+int
+cli_console_set_progress (struct cli_console          *console,
+                          struct cli_console_progress  progress)
 {
-	if (!flag_any(console->flags, CLI_CONSOLE_FULLSCREEN))
-		return;
-	uint32_t const len = text.len < sizeof console->status.data ? (uint32_t)text.len
-	                                                             : (uint32_t)sizeof console->status.data - 1;
-	for (uint32_t i = 0; i < len; ++i) {
-		unsigned char const byte = (unsigned char)text.data[i];
-		console->status.data[i] = byte - 0x20u < 0x5fu ? (char)byte : '?';
+	if (!console || progress.active > CLI_CONSOLE_COUNT_NONE)
+		return EINVAL;
+	if (flag_any(console->flags, CLI_CONSOLE_FULLSCREEN)) {
+		console->progress = progress;
+		console->dirty |= CLI_CONSOLE_PAINT_STATUS;
+		cli_loop_wake(console->loop);
 	}
-	console->status.data[len] = '\0';
-	console->status.len = len;
-	console->dirty |= CLI_CONSOLE_PAINT_STATUS;
-	cli_loop_wake(console->loop);
+	return 0;
 }
 
 bool

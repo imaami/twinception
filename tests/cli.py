@@ -415,18 +415,25 @@ class Peer:
                 if isinstance(body, dict):
                     body |= {"jsonrpc": "2.0", "id": request.get("id")}
                     body = json.dumps(body).encode()
+                # A list body is bytes to send and functions to call between
+                # them, such as one that waits.
+                parts = body if isinstance(body, list) else [body]
                 self.send_response(status)
                 self.send_header("Content-Type", kind)
                 self.send_header("Mcp-Session-Id", "cli-test-session")
-                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Content-Length", str(sum(len(part) for part in parts
+                                                           if isinstance(part, bytes))))
                 self.end_headers()
-                if kind == "text/event-stream":
-                    # Deliberately split event names, JSON strings, and newlines.
-                    for offset in range(0, len(body), 7):
-                        self.wfile.write(body[offset:offset + 7])
-                        self.wfile.flush()
-                else:
-                    self.wfile.write(body)
+                for part in parts:
+                    if callable(part):
+                        part()
+                    elif kind == "text/event-stream":
+                        # Deliberately split event names, JSON strings, and newlines.
+                        for offset in range(0, len(part), 7):
+                            self.wfile.write(part[offset:offset + 7])
+                            self.wfile.flush()
+                    else:
+                        self.wfile.write(part)
 
         self.server = UnixServer(self.socket, Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)

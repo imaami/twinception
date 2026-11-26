@@ -94,14 +94,37 @@ extern int
 cli_console_busy (struct cli_console *console,
                   uint8_t             busy);
 
-/** Show @p text in the status row of the full-screen UI in place of the
- *  word "ready" or "working", until a call with an empty @p text. The row
- *  shows at most 59 bytes of @p text, and a byte that is not printable
- *  ASCII as '?'.
+/** The counts of the status row. */
+enum cli_console_count : uint32_t {
+	CLI_CONSOLE_COUNT_TURN,       /**< the turn of an ask call */
+	CLI_CONSOLE_COUNT_TEXT,       /**< the tokens of its text */
+	CLI_CONSOLE_COUNT_REASONING,  /**< the tokens of its reasoning */
+	CLI_CONSOLE_COUNT_NONE,
+};
+
+/** What the status row of the full-screen UI shows of an ask call, from the
+ *  progress notifications of the server: the turn, the tokens of the text
+ *  and of the reasoning of all its answers so far, and the count that
+ *  grows, which is drawn brighter. No count grows once the console is no
+ *  longer busy.
  */
-extern void
-cli_console_set_status (struct cli_console *console,
-                        struct cstr_view    text);
+struct cli_console_progress {
+	uint64_t               text;       /**< tokens of the text */
+	uint64_t               reasoning;  /**< tokens of the reasoning */
+	uint32_t               turn;
+	enum cli_console_count active;     /**< the turn while it waits in the
+	                                        server's queue, the tokens of
+	                                        the kind that came last, or
+	                                        CLI_CONSOLE_COUNT_NONE */
+};
+
+/** Show @p progress in the status row of the full-screen UI from now on.
+ *  Returns EINVAL if @p console is nullptr or @p progress.active is past
+ *  CLI_CONSOLE_COUNT_NONE, and 0 otherwise.
+ */
+extern int
+cli_console_set_progress (struct cli_console          *console,
+                          struct cli_console_progress  progress);
 
 /** Returns true in the full-screen UI, where the reasoning has a pane of
  *  its own and the status row shows the status.
