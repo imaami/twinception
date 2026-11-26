@@ -1651,12 +1651,17 @@ cli_console_panels (struct cli_console *console,
  * tokens. CLI_CONSOLE_STATUS_COLOR() is the format with the 256-color
  * numbers of the turn and of the two counts, and the brackets in color 110.
  */
-#define CLI_CONSOLE_STATUS(frame, turn, text, reasoning)                                 \
-        frame "[ " turn "%4" PRIu32 frame " ][ " text "%7" PRIu64 frame " ][ " reasoning \
-        "%7" PRIu64 frame " ]%s"
-#define CLI_CONSOLE_STATUS_COLOR(turn, text, reasoning)                                  \
-        CLI_CONSOLE_STATUS("\033[0;38;5;110m", "\033[0;38;5;" #turn "m",                 \
-                           "\033[0;38;5;" #text "m", "\033[0;38;5;" #reasoning "m")
+#define CLI_CONSOLE_STATUS(frame, turn, text, reasoning)                                \
+        frame "[" turn "%4" PRIu32 frame "][" text "%7" PRIu64 frame "][" reasoning     \
+        "%7" PRIu64 frame "]%s"
+
+#define CLI_CONSOLE_STATUS_COLOR(a, b, c)                       \
+        CLI_CONSOLE_STATUS(RESET(), COLOR(a),      \
+                           COLOR(b), COLOR(c))
+
+#define SGR(...) "\033[" __VA_ARGS__ "m"
+#define COLOR(x) SGR("38;5;" #x)
+#define RESET() SGR("0")
 
 /* Append the status row to @p output: the turn and the tokens of the text
  * and of the reasoning of the ask call, the count that grows in a brighter
