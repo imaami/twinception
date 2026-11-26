@@ -1,19 +1,18 @@
 #include <errno.h>
 
 #include "cli_client.h"
+#include "cli_console.h"
 #include "cli_stream.h"
 #include "jb.h"
 
 struct cli_stream
 cli_stream (struct cli_console *console,
-            struct cstr_view    actor,
             struct cstr_view    token,
             uint64_t            flags)
 {
 	return (struct cli_stream){
 		.ui = cli_ui(console),
 		.text = DSTR_INIT,
-		.actor = actor,
 		.token = token,
 		.flags = { flags },
 	};
@@ -27,7 +26,8 @@ cli_stream_fini (struct cli_stream *stream)
 }
 
 /* Show the progress of params, the parameters of a progress notification,
- * if it is for the token of the stream.
+ * if it is for the token of the stream: a call of a tool in the line of the
+ * calls, and other progress in the status row.
  */
 static int
 cli_stream_progress (struct cli_stream  *stream,
@@ -38,8 +38,14 @@ cli_stream_progress (struct cli_stream  *stream,
 	if (!token.data || !message.data || !cstr_view_equal(token, stream->token))
 		return 0;
 	struct json_object *meta = jb_get(jb_get(params, "_meta"), "askai");
-	return jb_is(jb_get(meta, "kind"), "tool") ? cli_ui_action(&stream->ui, stream->actor, message)
-	                                           : cli_ui_progress(&stream->ui, stream->actor, message);
+	if (!jb_is(jb_get(meta, "kind"), "tool")) {
+		cli_console_set_status(stream->ui.console, message);
+		return 0;
+	}
+	/* A server without the member tool names the tool only in the
+	 * message. */
+	struct cstr_view tool = jb_view(jb_get(meta, "tool"));
+	return cli_ui_action(&stream->ui, tool.len ? tool : message);
 }
 
 int

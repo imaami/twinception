@@ -898,7 +898,7 @@ def check_terminal_cells(cli):
                 terminal.resize(columns)
                 terminal.text("resize-marker")
             marker = "resize-marker" if columns == 40 else "cells-done"
-            output = terminal.screen(lambda rows: marker in "\n".join(rows) and "askai | ready" in rows[-2],
+            output = terminal.screen(lambda rows: marker in "\n".join(rows) and rows[-2].startswith(" ready |"),
                                      "wrapped output did not redraw")
             expected = []
             for text in lines:

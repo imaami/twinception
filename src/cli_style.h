@@ -22,9 +22,7 @@
         X(TITLE,                "\033[0;38;5;229m") \
         X(TITLE_INACTIVE,       "\033[0;38;5;153m") \
         X(STATUS,               "\033[0;38;5;110m") \
-        X(TOOL_ACTOR,           "\033[0;38;5;215m") \
-        X(TOOL_STATUS,          "\033[0;38;5;180m") \
-        X(PROGRESS,             "\033[0;38;5;109m") \
+        X(TOOL,                 "\033[0;38;5;215m") \
         X(COMPLETION_COMMAND,   "\033[0;38;5;81m")  \
         X(COMPLETION_TOOL,      "\033[0;38;5;114m") \
         X(COMPLETION_PARAMETER, "\033[0;38;5;222m") \

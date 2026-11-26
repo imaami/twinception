@@ -721,8 +721,7 @@ cli_ask (struct cli          *cli,
 	if (!params)
 		return ENOMEM;
 	uint64_t flags = CLI_STREAM_DELTAS | (flag_any(cli->options->flags, CLI_OPTIONS_NO_REASONING) ? 0 : CLI_STREAM_REASONING);
-	struct cli_stream stream = cli_stream(cli->console, cstr_view_dstr(&cli->client.tool),
-	                                      CSTR_VIEW("cli"), flags);
+	struct cli_stream stream = cli_stream(cli->console, CSTR_VIEW("cli"), flags);
 	cli_json_auto result = nullptr;
 	int e = cli_client_rpc(&cli->client, CLI_TOOLS_CALL, json_object_get(params),
 	                       cli_stream_notify, &stream, &result, error);

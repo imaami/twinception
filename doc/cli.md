@@ -184,7 +184,8 @@ show only input until resized; both buffers and the draft are retained.
 Each scrollback retains up to 10,000 logical lines or 16 MiB of text.
 Older transcript content is evicted independently of drafts and
 saved input history. Scrolling away from the bottom preserves the viewport
-and shows an unread count; Ctrl-End resumes following new output. Colors are
+and shows the count of unread lines on the bottom edge of the pane; Ctrl-End
+resumes following new output and removes the count. Colors are
 retained with text across scrolling and resizing. Adjacent text with the
 same style shares one run. Rendering updates changed rows in changed regions;
 editing the draft does not redraw scrollback. The cursor remains visible
@@ -355,12 +356,15 @@ those views directly; only the strings that Readline takes ownership of are
 copied. The terminal, display, and MCP transport are C modules with explicit
 ownership and error returns; no C++ compiler or runtime is needed.
 
-Tool calls and progress use IRC-style action lines, for example
-`* you call notes` and `* ask_ai turn 1, calling git`. Reasoning remains in
-the current transcript. Token-count progress is coalesced while text streams,
-so it does not split reasoning into one block per delta. Actual tool actions
-still appear at their stream boundary. Multiple connections, IRC-style windows and private
-thought-stream tabs are future UI work.
+A call of a tool is a line such as `* git`, and calls of one tool in a row
+share one line, such as `* git x5`. The line is written when the row ends:
+at a call of another tool, at the text of the answer, or at the end of the
+answer. In full-screen mode the reasoning has a pane of its own and does not
+end a row. A manual `/tool` call shows its line before its result. The status
+of an answer, such as `turn 2, generating, 516 tokens`, replaces `working` in
+the status row of full-screen mode. The other modes do not show it, so the
+status never splits reasoning or text. Multiple connections, IRC-style windows
+and private thought-stream tabs are future UI work.
 
 ## Initial prompts and scripts
 

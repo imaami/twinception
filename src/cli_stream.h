@@ -21,14 +21,13 @@ enum {
 	CLI_STREAM_REASONING = FLAG_OWN(1),
 };
 
-/** Owns rendering state and accumulated text; borrows its console, actor
- * and token. The borrowed strings must remain readable and unchanged until
+/** Owns rendering state and accumulated text; borrows its console and
+ * token. The borrowed token must remain readable and unchanged until
  * fini. Members provide storage for embedding, not a caller interface.
  */
 struct cli_stream {
 	struct cli_ui    ui;
 	struct dstr      text;
-	struct cstr_view actor;
 	struct cstr_view token;
 	int64_t          turn;
 	struct flag64    flags;
@@ -36,7 +35,6 @@ struct cli_stream {
 
 extern struct cli_stream
 cli_stream (struct cli_console *console,
-            struct cstr_view    actor,
             struct cstr_view    token,
             uint64_t            flags);
 

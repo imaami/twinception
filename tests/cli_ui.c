@@ -1,4 +1,6 @@
-/** @file Progress must not split reasoning or text deltas into fragments. */
+/** @file Calls of one tool in a row share a line, which does not split
+ *  reasoning or text deltas into fragments. Simple output shows no status.
+ */
 #define _GNU_SOURCE
 
 #include <assert.h>
@@ -43,6 +45,8 @@ cli_ui_test_colors (void)
 	assert(!cli_ui_message(console, CSTR_VIEW("local command output")));
 	assert(!cli_ui_push(&display, true, CSTR_VIEW("continued thought\n")));
 	assert(!cli_ui_info(console, CSTR_VIEW("local status")));
+	assert(!cli_ui_action(&display, CSTR_VIEW("git")));
+	assert(!cli_ui_action(&display, CSTR_VIEW("git")));
 	cli_ui_fini(&display);
 	assert(!cli_console_pending(console));
 	cli_console_destroy(&console);
@@ -73,6 +77,8 @@ cli_ui_test_colors (void)
 		cli_console_span(CSTR_VIEW(""), CLI_STYLE_RESET),
 		cli_console_span(CSTR_VIEW("[End thinking]\n"), CLI_STYLE_REASONING),
 		cli_console_span(CSTR_VIEW(""), CLI_STYLE_RESET),
+		cli_console_span(CSTR_VIEW("* git x2\n"), CLI_STYLE_TOOL),
+		cli_console_span(CSTR_VIEW(""), CLI_STYLE_RESET),
 	};
 	struct cli_style_entry const *palette = cli_style_palette(true);
 	struct cstr_view remaining = cstr_view_dstr(&output);
@@ -102,33 +108,31 @@ int main(void)
 	assert(console && !e);
 	{
 		struct cli_ui display = cli_ui(console);
-		assert(!cli_ui_progress(&display, CSTR_VIEW("model"), CSTR_VIEW("turn 1, generating, 0 tokens")));
+		cli_console_set_status(console, CSTR_VIEW("turn 1, generating, 0 tokens"));
 		assert(!cli_ui_push(&display, true, CSTR_VIEW("The")));
-		assert(!cli_ui_progress(&display, CSTR_VIEW("model"), CSTR_VIEW("turn 1, thinking, 1 tokens")));
 		assert(!cli_ui_push(&display, true, CSTR_VIEW(" user")));
-		assert(!cli_ui_progress(&display, CSTR_VIEW("model"), CSTR_VIEW("turn 1, thinking, 2 tokens")));
 		assert(!cli_ui_push(&display, true, CSTR_VIEW(" says hi.")));
-		assert(!cli_ui_progress(&display, CSTR_VIEW("model"), CSTR_VIEW("turn 1, thinking, 3 tokens")));
-		assert(!cli_ui_action(&display, CSTR_VIEW("model"), CSTR_VIEW("turn 1, calling notes")));
-		assert(!cli_ui_progress(&display, CSTR_VIEW("model"), CSTR_VIEW("turn 2, generating, 0 tokens")));
+		assert(!cli_ui_action(&display, CSTR_VIEW("notes")));
+		assert(!cli_ui_action(&display, CSTR_VIEW("notes")));
 		assert(!cli_ui_push(&display, true, CSTR_VIEW("Read")));
-		assert(!cli_ui_progress(&display, CSTR_VIEW("model"), CSTR_VIEW("turn 2, thinking, 1 tokens")));
 		assert(!cli_ui_push(&display, true, CSTR_VIEW(" the note.")));
+		assert(!cli_ui_action(&display, CSTR_VIEW("git")));
+		assert(!cli_ui_action(&display, CSTR_VIEW("notes")));
 		assert(!cli_ui_push(&display, false, CSTR_VIEW("Hello")));
-		assert(!cli_ui_progress(&display, CSTR_VIEW("model"), CSTR_VIEW("turn 2, generating, 3 tokens")));
 		assert(!cli_ui_push(&display, false, CSTR_VIEW(" there.")));
-		assert(!cli_ui_progress(&display, CSTR_VIEW("model"), CSTR_VIEW("turn 2, generating, 4 tokens")));
 		assert(!cli_ui_finish(&display));
 		assert(!cli_ui_finish(&display));
 		cli_ui_fini(&display);
 	}
 	{
 		struct cli_ui display = cli_ui(console);
+		assert(!cli_ui_push(&display, false, CSTR_VIEW("Let me look.")));
+		assert(!cli_ui_action(&display, CSTR_VIEW("git")));
+		assert(!cli_ui_push(&display, false, CSTR_VIEW("Done.")));
 		assert(!cli_ui_push(&display, true, CSTR_VIEW("Interrupted")));
-		assert(!cli_ui_progress(&display, CSTR_VIEW("model"), CSTR_VIEW("thinking, 1 tokens")));
-		assert(!cli_ui_progress(&display, CSTR_VIEW("model"), CSTR_VIEW("thinking, 1 tokens")));
-		assert(!cli_ui_push(&display, true, CSTR_VIEW(" reasoning.")));
-		assert(!cli_ui_progress(&display, CSTR_VIEW("model"), CSTR_VIEW("thinking, 2 tokens")));
+		assert(!cli_ui_action(&display, CSTR_VIEW("git")));
+		assert(!cli_ui_action(&display, CSTR_VIEW("git")));
+		assert(!cli_ui_action(&display, CSTR_VIEW("git")));
 		cli_ui_fini(&display);
 	}
 	cli_console_destroy(&console);
@@ -146,19 +150,20 @@ int main(void)
 	assert(!ferror(capture));
 	assert(!fclose(capture));
 	assert(!strcmp(dstr_get(&output),
-	       "* model turn 1, generating, 0 tokens\n"
 	       "[Start thinking]\n\n"
 	       "The user says hi.\n[End thinking]\n"
-	       "* model turn 1, thinking, 3 tokens\n"
-	       "* model turn 1, calling notes\n"
-	       "* model turn 2, generating, 0 tokens\n"
+	       "* notes x2\n"
 	       "[Start thinking]\n\n"
-	       "Read the note.\n[End thinking]\n\n"
+	       "Read the note.\n[End thinking]\n"
+	       "* git\n"
+	       "* notes\n"
 	       "Hello there.\n"
-	       "* model turn 2, generating, 4 tokens\n"
+	       "Let me look.\n"
+	       "* git\n"
+	       "Done.\n"
 	       "[Start thinking]\n\n"
-	       "Interrupted reasoning.\n[End thinking]\n"
-	       "* model thinking, 2 tokens\n"));
+	       "Interrupted\n[End thinking]\n"
+	       "* git x3\n"));
 	cli_ui_test_colors();
-	puts("cli UI: contiguous deltas, coalesced status, tool boundaries and interleaved colors: PASS");
+	puts("cli UI: contiguous deltas, calls in a row on one line, no status and interleaved colors: PASS");
 }

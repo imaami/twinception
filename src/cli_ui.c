@@ -7,6 +7,7 @@
 
 #include "cli_console.h"
 #include "cli_ui.h"
+#include "util.h"
 
 /* The mark that is written when the output enters a state, and the style
  * of the output in that state. Index 0 is the state out of the reasoning,
@@ -28,6 +29,26 @@ cli_ui_newline (struct cli_ui *ui)
 	return e;
 }
 
+/* Write the line of the calls in a row, "* git" for one call and "* git x5"
+ * for five, and forget the calls. The conversation is at the start of a
+ * line: cli_ui_action() ended the line before it counted the first call.
+ */
+static int
+cli_ui_calls (struct cli_ui *ui)
+{
+	if (!ui->calls)
+		return 0;
+	char count[32];
+	struct cli_console_span const spans[] = {
+		cli_console_span(CSTR_VIEW("* "), CLI_STYLE_TOOL),
+		cli_console_span(cstr_view_dstr(&ui->tool), CLI_STYLE_TOOL),
+		cli_console_span(ui->calls > 1 ? util_format_view(count, sizeof count, " x%zu\n", ui->calls)
+		                               : CSTR_VIEW("\n"), CLI_STYLE_TOOL),
+	};
+	ui->calls = 0;
+	return cli_console_print(ui->console, spans, array_size(spans));
+}
+
 int
 cli_ui_push (struct cli_ui    *ui,
              bool              thinking,
@@ -35,9 +56,13 @@ cli_ui_push (struct cli_ui    *ui,
 {
 	if (!text.len)
 		return 0;
+	/* Output in the conversation ends the calls in a row. The reasoning is
+	 * output in the conversation too, unless the full-screen UI shows it in
+	 * a pane of its own. */
+	int e = !thinking || !cli_console_fullscreen(ui->console) ? cli_ui_calls(ui) : 0;
 	bool reasoning = flag_any(ui->flags, CLI_UI_REASONING_OPEN);
-	flag_set(&ui->flags, CLI_UI_TEXT_SHOWN);
-	int e = cli_console_set_display(ui->console, cli_ui_modes[reasoning].style);
+	if (!e)
+		e = cli_console_set_display(ui->console, cli_ui_modes[reasoning].style);
 	if (!e && thinking != reasoning) {
 		/* The mark is in the reasoning style, and so is the newline that
 		 * ends the reasoning. */
@@ -58,26 +83,11 @@ cli_ui_push (struct cli_ui    *ui,
 	return cli_console_write(ui->console, thinking, text);
 }
 
+/* End the line of the output, and the reasoning if its start mark is
+ * written, so that the next output starts a line out of the reasoning.
+ */
 static int
-cli_ui_write_action (struct cli_ui    *ui,
-                     struct cstr_view  actor,
-                     struct cstr_view  text,
-                     enum cli_style    style)
-{
-	/* A tool status shows its actor in a style of its own. */
-	enum cli_style lead = style == CLI_STYLE_TOOL_STATUS ? CLI_STYLE_TOOL_ACTOR : style;
-	struct cli_console_span const spans[] = {
-		cli_console_span(CSTR_VIEW("* "), lead),
-		cli_console_span(actor, lead),
-		cli_console_span(CSTR_VIEW(" "), style),
-		cli_console_span(text, style),
-		cli_console_span(CSTR_VIEW("\n"), style),
-	};
-	return cli_console_print(ui->console, spans, array_size(spans));
-}
-
-int
-cli_ui_finish (struct cli_ui *ui)
+cli_ui_close (struct cli_ui *ui)
 {
 	bool reasoning = flag_any(ui->flags, CLI_UI_REASONING_OPEN);
 	int e = cli_console_set_display(ui->console, cli_ui_modes[reasoning].style);
@@ -85,57 +95,47 @@ cli_ui_finish (struct cli_ui *ui)
 		e = cli_ui_newline(ui);
 	if (!e && reasoning)
 		e = cli_console_write(ui->console, true, CSTR_VIEW("[End thinking]\n"));
+	flag_clr(&ui->flags, CLI_UI_REASONING_OPEN);
 	int reset = cli_console_set_display(ui->console, CLI_STYLE_RESET);
-	if (!e && !reset && flag_any(ui->flags, CLI_UI_PROGRESS_PENDING))
-		e = cli_ui_write_action(ui, cstr_view_dstr(&ui->actor), cstr_view_dstr(&ui->status), CLI_STYLE_PROGRESS);
-	dstr_clear(&ui->actor);
-	dstr_clear(&ui->status);
-	ui->flags = flag64(flag_get(ui->flags, CLI_UI_TRAILING_NEWLINE));
 	return e ? e : reset;
+}
+
+int
+cli_ui_finish (struct cli_ui *ui)
+{
+	int e = cli_ui_close(ui);
+	if (!e)
+		e = cli_ui_calls(ui);
+	ui->calls = 0;
+	cli_console_set_status(ui->console, cstr_view(nullptr));
+	return e;
 }
 
 void
 cli_ui_fini (struct cli_ui *ui)
 {
 	(void)cli_ui_finish(ui);
-	dstr_cleanup(&ui->actor);
-	dstr_cleanup(&ui->status);
-}
-
-int
-cli_ui_progress (struct cli_ui    *ui,
-                 struct cstr_view  actor,
-                 struct cstr_view  text)
-{
-	if (!text.len || (cstr_view_equal(actor, cstr_view_dstr(&ui->actor)) &&
-	                  cstr_view_equal(text, cstr_view_dstr(&ui->status))))
-		return 0;
-	/* Reserve both before replacing either, leaving a valid status on failure. */
-	size_t actor_len = dstr_len(&ui->actor);
-	size_t status_len = dstr_len(&ui->status);
-	if (!dstr_reserve(&ui->actor, actor.len > actor_len ? actor.len - actor_len : 0) ||
-	    !dstr_reserve(&ui->status, text.len > status_len ? text.len - status_len : 0))
-		return ENOMEM;
-	dstr_clear(&ui->actor);
-	dstr_clear(&ui->status);
-	if (cstr_view_cat(actor, &ui->actor) || cstr_view_cat(text, &ui->status))
-		return ENOMEM;
-	/* After a shown line or delta, the last line waits for the end. */
-	if (flag_any(ui->flags, CLI_UI_TEXT_SHOWN | CLI_UI_PROGRESS_SHOWN)) {
-		flag_set(&ui->flags, CLI_UI_PROGRESS_PENDING);
-		return 0;
-	}
-	flag_set(&ui->flags, CLI_UI_PROGRESS_SHOWN);
-	return cli_ui_write_action(ui, actor, text, CLI_STYLE_PROGRESS);
+	dstr_cleanup(&ui->tool);
 }
 
 int
 cli_ui_action (struct cli_ui    *ui,
-               struct cstr_view  actor,
-               struct cstr_view  text)
+               struct cstr_view  tool)
 {
-	int e = cli_ui_finish(ui);
-	return e ? e : cli_ui_write_action(ui, actor, text, CLI_STYLE_TOOL_STATUS);
+	int e = cli_ui_close(ui);
+	if (e)
+		return e;
+	if (ui->calls && cstr_view_equal(tool, cstr_view_dstr(&ui->tool))) {
+		++ui->calls;
+		return 0;
+	}
+	e = cli_ui_calls(ui);
+	if (e)
+		return e;
+	if (cstr_view_store(tool, &ui->tool))
+		return ENOMEM;
+	ui->calls = 1;
+	return 0;
 }
 
 static int

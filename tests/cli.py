@@ -536,10 +536,10 @@ def check_peer_progress(cli, unused_server):
         token = request["params"]["_meta"]["progressToken"]
         events = []
 
-        def progress(text, kind="status"):
+        def progress(text, kind="status", tool=None):
             params = {"progressToken": token, "progress": len(events), "message": text}
             if kind:
-                params["_meta"] = {"askai": {"kind": kind}}
+                params["_meta"] = {"askai": {"kind": kind} | ({"tool": tool} if tool else {})}
             events.append((None, {"jsonrpc": "2.0", "method": "notifications/progress",
                                   "params": params}))
 
@@ -552,7 +552,10 @@ def check_peer_progress(cli, unused_server):
         for count, text in enumerate(("The", " user", " says hi."), 1):
             delta(1, "reasoning", text)
             progress(f"turn 1, thinking, {count} tokens")
-        progress("turn 1, calling notes", "tool")
+        progress("turn 1, calling notes", "tool", "notes")
+        progress("turn 1, calling notes", "tool", "notes")
+        # A server without the member tool names the tool only in the message.
+        progress("turn 1, calling git", "tool")
         # Untyped progress from older servers must also leave deltas intact.
         progress("turn 2, generating, 0 tokens", None)
         delta(2, "reasoning", "Read")
@@ -568,18 +571,17 @@ def check_peer_progress(cli, unused_server):
 
     with Peer(reply) as peer:
         output = succeeded(run(cli, peer.socket, "--single-turn", "--prompt", "Q"))
+        # Calls of one tool in a row share a line, and the simple output
+        # shows no status.
         assert output == (
-            "* ask_ai turn 1, generating, 0 tokens\n"
             "[Start thinking]\n\n"
             "The user says hi.\n[End thinking]\n"
-            "* ask_ai turn 1, thinking, 3 tokens\n"
-            "* ask_ai turn 1, calling notes\n"
-            "* ask_ai turn 2, generating, 0 tokens\n"
+            "* notes x2\n"
+            "* turn 1, calling git\n"
             "[Start thinking]\n\n"
             "Read the note.\n[End thinking]\n\n"
-            "Hello there.\n"
-            "* ask_ai turn 2, generating, 4 tokens\n"), output
-    print("cli progress: uninterrupted reasoning/text, coalesced counts and immediate tools: PASS")
+            "Hello there.\n"), output
+    print("cli progress: calls in a row on one line, no status, uninterrupted reasoning/text: PASS")
 
 
 def check_peer_catalog(cli, unused_server):
@@ -657,8 +659,11 @@ def check_peer_catalog(cli, unused_server):
                        "People: carol. Agents: self.\n"):
             assert marker in output, (marker, output)
         assert "malformed" not in output and "bad name" not in output, output
-        assert "* you call git" in output and "* git reading history" in output, output
-        assert "* git completed" in output and "WRONG-PROGRESS" not in output, output
+        # The line of a call comes before its result, and the simple output
+        # shows no status.
+        assert "* git\nTOOL-RESULT\n" in output and "* lookup\nREFRESHED-TOOL\n" in output, output
+        for text in ("reading history", "WRONG-PROGRESS", "you call", "completed"):
+            assert text not in output, (text, output)
         calls = [request["params"]["name"] for request in peer.requests
                  if request["method"] == "tools/call"]
         assert calls == ["notebook_service", "git", "ask_ai", "notebook_service", "lookup"], calls
@@ -784,7 +789,8 @@ def check_peer_notes(cli, unused_server):
 
         def completed(expected=None):
             # A fresh draft is available before an asynchronous tool replies.
-            read_until(proc, b"* notebook_service completed", 5, master)
+            output = read_until(proc, b"NOTE-OK", 5, master)
+            assert b"* notebook_service" in output, output
             if expected is not None:
                 assert calls[-1] == expected, calls
 

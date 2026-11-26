@@ -94,6 +94,21 @@ extern int
 cli_console_busy (struct cli_console *console,
                   uint8_t             busy);
 
+/** Show @p text in the status row of the full-screen UI in place of the
+ *  word "ready" or "working", until a call with an empty @p text. The row
+ *  shows at most 59 bytes of @p text, and a byte that is not printable
+ *  ASCII as '?'.
+ */
+extern void
+cli_console_set_status (struct cli_console *console,
+                        struct cstr_view    text);
+
+/** Returns true in the full-screen UI, where the reasoning has a pane of
+ *  its own and the status row shows the status.
+ */
+extern bool
+cli_console_fullscreen (struct cli_console const *console);
+
 /** Pending bytes are drained by UI turns; stop IO only once this is false. */
 extern bool
 cli_console_pending (struct cli_console const *console);

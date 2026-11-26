@@ -228,6 +228,7 @@ struct cli_console {
 	struct termios                   initial_state;
 	struct termios                   resume_state;
 	struct cli_console_completion    completions[AUTOCOMPLETE_MATCHES];
+	UTIL_TEXT(60)                    status;  /**< cli_console_set_status() */
 	enum cli_style                   display;
 	enum cli_console_pane_id         focused;
 	int                              pending_input;
@@ -1474,10 +1475,13 @@ cli_console_frame (struct cli_console *console,
 		struct cli_scrollback const *scrollback = &console->panes[pane].scrollback;
 		bool focused = console->focused == pane;
 		char buffer[64];
-		struct cstr_view caption = edge
-			? util_format_view(buffer, sizeof buffer, " %s | %zu unread ",
-			                   scrollback->offset ? "scrolling" : "live", scrollback->unread)
-			: util_format_view(buffer, sizeof buffer, " %c %s ", focused ? '*' : ' ', names[pane]);
+		/* The bottom edge has a caption only while the pane is scrolled
+		 * back from its end. */
+		struct cstr_view caption = CSTR_VIEW("");
+		if (!edge)
+			caption = util_format_view(buffer, sizeof buffer, " %c %s ", focused ? '*' : ' ', names[pane]);
+		else if (scrollback->offset)
+			caption = util_format_view(buffer, sizeof buffer, " %zu unread ", scrollback->unread);
 		unsigned width = cli_console_pane_width(console, pane);
 		if (caption.len > width)
 			caption.len = width;
@@ -1522,11 +1526,14 @@ cli_console_status (struct cli_console *console,
                     struct dstr        *output)
 {
 	static char const hint[] = " | Alt-Left/Right pane  Alt-Up/Down scroll  Ctrl-End follow";
-	char buffer[128];
+	static struct cstr_view const states[] = {CSTR_VIEW_INIT("ready"), CSTR_VIEW_INIT("working")};
+	struct cstr_view state = console->status.len ? util_text_view(&console->status)
+	                                             : states[flag_any(console->flags, CLI_CONSOLE_BUSY)];
+	char buffer[160];
 	struct cstr_view status = console->queue.used.n
-		? util_format_view(buffer, sizeof buffer, " askai | %zu queued%s", console->queue.used.n, hint)
-		: util_format_view(buffer, sizeof buffer, " askai | %s%s",
-		                   flag_any(console->flags, CLI_CONSOLE_BUSY) ? "working" : "ready", hint);
+		? util_format_view(buffer, sizeof buffer, " %.*s | %zu queued%s", (int)state.len, state.data,
+		                   console->queue.used.n, hint)
+		: util_format_view(buffer, sizeof buffer, " %.*s%s", (int)state.len, state.data, hint);
 	return dstr_printf(output, "%s%-*.*s", cli_console_style(console, CLI_STYLE_STATUS),
 	                   (int)console->columns, (int)console->columns, status.data) ? 0 : ENOMEM;
 }
@@ -2024,6 +2031,30 @@ cli_console_flush (struct cli_console *console)
 	return e ? e : cli_console_render(console);
 }
 
+
+void
+cli_console_set_status (struct cli_console *console,
+                        struct cstr_view    text)
+{
+	if (!flag_any(console->flags, CLI_CONSOLE_FULLSCREEN))
+		return;
+	uint32_t const len = text.len < sizeof console->status.data ? (uint32_t)text.len
+	                                                             : (uint32_t)sizeof console->status.data - 1;
+	for (uint32_t i = 0; i < len; ++i) {
+		unsigned char const byte = (unsigned char)text.data[i];
+		console->status.data[i] = byte - 0x20u < 0x5fu ? (char)byte : '?';
+	}
+	console->status.data[len] = '\0';
+	console->status.len = len;
+	console->dirty |= CLI_CONSOLE_PAINT_STATUS;
+	cli_loop_wake(console->loop);
+}
+
+bool
+cli_console_fullscreen (struct cli_console const *console)
+{
+	return flag_any(console->flags, CLI_CONSOLE_FULLSCREEN);
+}
 
 bool
 cli_console_pending (struct cli_console const *console)

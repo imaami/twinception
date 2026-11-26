@@ -72,8 +72,7 @@ cli_tool_create (struct cli_client  *client,
 	*tool = (struct cli_tool){.hook = list(&tool->hook), .client = client,
 	                          .name = json_object_get(jb_get(params, "name")),
 	                          .params = json_object_get(params), .dirty = dirty};
-	/* The stream views the name that the tool owns. */
-	tool->stream = cli_stream(console, cli_tool_name(tool), token, 0);
+	tool->stream = cli_stream(console, token, 0);
 	return tool;
 }
 
@@ -89,17 +88,6 @@ cli_tool_destroy (struct cli_tool **pp)
 	cli_client_json_cleanup(&tool->name);
 	cli_client_json_cleanup(&tool->params);
 	free(tool);
-}
-
-static int
-cli_tool_begin (struct cli_tool *tool)
-{
-	flag_set(&tool->client->flags, tool->dirty);
-	struct cstr_view name = cli_tool_name(tool);
-	dstr_auto action = dstr("call ");
-	if (cstr_view_cat(name, &action))
-		return ENOMEM;
-	return cli_ui_action(&tool->stream.ui, CSTR_VIEW("you"), cstr_view_dstr(&action));
 }
 
 static int
@@ -137,16 +125,23 @@ cli_tool_content (struct cli_tool    *tool,
 	return 0;
 }
 
+/* Show the result of the call after its line, "* git", which also tells
+ * the results of calls that run at once apart.
+ */
 static int
 cli_tool_result (struct cli_tool    *tool,
                  struct json_object *result,
                  struct cli_error   *error)
 {
-	int e = cli_tool_content(tool, result, error);
 	struct cstr_view name = cli_tool_name(tool);
+	int e = cli_ui_action(&tool->stream.ui, name);
+	if (!e)
+		e = cli_ui_finish(&tool->stream.ui);
+	if (!e)
+		e = cli_tool_content(tool, result, error);
 	if (!e && json_object_get_boolean(jb_get(result, "isError")))
 		e = cli_error_set(error, EIO, "Tool %.*s failed", (int)name.len, name.data);
-	return e ? e : cli_ui_action(&tool->stream.ui, name, CSTR_VIEW("completed"));
+	return e;
 }
 
 int
@@ -165,11 +160,10 @@ int
 cli_tool_run (struct cli_tool  *tool,
               struct cli_error *error)
 {
-	int e = cli_tool_begin(tool);
+	flag_set(&tool->client->flags, tool->dirty);
 	cli_json_auto result = nullptr;
-	if (!e)
-		e = cli_client_rpc(tool->client, CLI_TOOLS_CALL, json_object_get(tool->params),
-		                   cli_stream_notify, &tool->stream, &result, error);
+	int e = cli_client_rpc(tool->client, CLI_TOOLS_CALL, json_object_get(tool->params),
+	                       cli_stream_notify, &tool->stream, &result, error);
 	return e ? e : cli_tool_result(tool, result, error);
 }
 
@@ -196,10 +190,9 @@ cli_tool_submit (struct cli_tool  *tool,
 {
 	if (!done || !active)
 		return EINVAL;
-	int e = cli_tool_begin(tool);
-	if (!e)
-		e = cli_client_submit(tool->client, CLI_TOOLS_CALL, json_object_get(tool->params),
-		                      cli_stream_notify, cli_tool_done, &tool->stream, &tool->request, error);
+	flag_set(&tool->client->flags, tool->dirty);
+	int e = cli_client_submit(tool->client, CLI_TOOLS_CALL, json_object_get(tool->params),
+	                          cli_stream_notify, cli_tool_done, &tool->stream, &tool->request, error);
 	if (!e) {
 		cli_client_json_cleanup(&tool->params);
 		tool->done = done;

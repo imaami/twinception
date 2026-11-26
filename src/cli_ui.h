@@ -20,24 +20,16 @@ enum {
 
 	/** the output ends a line */
 	CLI_UI_TRAILING_NEWLINE = FLAG_OWN(1),
-
-	/** text was shown */
-	CLI_UI_TEXT_SHOWN = FLAG_OWN(2),
-
-	/** a progress line was shown */
-	CLI_UI_PROGRESS_SHOWN = FLAG_OWN(3),
-
-	/** the newest progress line is stored and is shown when the text ends
-	 */
-	CLI_UI_PROGRESS_PENDING = FLAG_OWN(4),
 };
 
-/** A streamed turn borrows its console and owns its pending status text.
+/** A streamed turn borrows its console. It owns the name of the tool that
+ *  the last calls in a row called, and their count. Their line is written
+ *  when the row ends.
  */
 struct cli_ui {
 	struct cli_console *console;
-	struct dstr         actor;
-	struct dstr         status;
+	struct dstr         tool;
+	size_t              calls;  /**< the calls in the row, 0 if none */
 	struct flag64       flags;
 };
 
@@ -46,8 +38,7 @@ cli_ui (struct cli_console *console)
 {
 	return (struct cli_ui){
 		.console = console,
-		.actor = DSTR_INIT,
-		.status = DSTR_INIT,
+		.tool = DSTR_INIT,
 		.flags = { CLI_UI_TRAILING_NEWLINE },
 	};
 }
@@ -60,18 +51,19 @@ cli_ui_push (struct cli_ui    *ui,
              bool              thinking,
              struct cstr_view  text);
 
+/** Ends the output of the turn: the reasoning, the line of the calls in a
+ *  row, and the status in the status row.
+ */
 extern int
 cli_ui_finish (struct cli_ui *ui);
 
-extern int
-cli_ui_progress (struct cli_ui    *ui,
-                 struct cstr_view  actor,
-                 struct cstr_view  text);
-
+/** Counts a call of @p tool. Calls of one tool in a row share a line, "* git"
+ *  for one call and "* git x5" for five. The line is written when a call of
+ *  another tool, text in the conversation or cli_ui_finish() ends the row.
+ */
 extern int
 cli_ui_action (struct cli_ui    *ui,
-               struct cstr_view  actor,
-               struct cstr_view  text);
+               struct cstr_view  tool);
 
 extern int
 cli_ui_message (struct cli_console *console,
