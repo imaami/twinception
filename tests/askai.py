@@ -2158,6 +2158,10 @@ def check_client_jobs(binary, up):
                 assert props["wait"]["jobs"]["items"] == {"type": "string"} and \
                     props["jobs"]["job"]["type"] == "string" and \
                     props["jobs"]["timer"]["type"] == "integer", props
+                # The arguments of each action of jobs, for the completion of
+                # clients: cancel takes a job or a timer, not both.
+                assert tools["jobs"]["_meta"]["askai"]["takes"] == {
+                    "list": [[]], "result": [["job"]], "cancel": [["job"], ["timer"]]}, tools
 
                 # A background ask answers at once, and runs as a job, which
                 # the list shows and a wait waits for. The job's result is
@@ -2584,7 +2588,7 @@ def check_background(binary, up):
         with Askai(binary, "-u", up.url(), "--api", "responses") as ai:
             tool = ai.rpc("tools/list")[2]["result"]["tools"][0]
             assert tool["inputSchema"]["required"] == ["prompt"], tool
-            assert "job" not in tool["inputSchema"]["properties"], tool
+            assert "job" not in tool["inputSchema"]["properties"] and "_meta" not in tool, tool
             assert text_of(ai.ask()) == "A"
             assert "background" not in up.last()["body"], up.last()
 
@@ -2635,6 +2639,11 @@ def check_background(binary, up):
                 schema = tools[0]["inputSchema"]
                 assert schema["required"] == [] and schema["properties"]["action"][
                     "enum"] == ["result", "cancel"], schema
+                # For the completion of clients: a call with job takes only
+                # action, and a call without job, the empty action, no action.
+                assert tools[0]["_meta"]["askai"]["takes"] == {
+                    "": [["prompt", "system", "messages", "background"], ["job"]],
+                    "result": [["job"]], "cancel": [["job"]]}, tools[0]
                 first = start(ai, "first")
                 assert streams[0].entered.wait(5)
                 second = start(ai, "second", modern=True)

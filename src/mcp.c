@@ -8063,7 +8063,7 @@ mcp_tool_definition (void const *service)
 			"cancel stops the job. The default is result."),
 			"default", json_object_new_string("result")));
 	}
-	return jb_object(
+	struct json_object *def = jb_object(
 		"name", json_object_new_string(st->tool->name),
 		"title", json_object_new_string("Ask AI"),
 		"description", schema_text3(st->tool->description, st->ep->background
@@ -8080,6 +8080,36 @@ mcp_tool_definition (void const *service)
 			"openWorldHint", json_object_new_boolean(1),
 			nullptr),
 		nullptr);
+	if (!st->ep->background)
+		return def;
+	/* In background mode, a call with job takes no argument but action,
+	 * result or cancel, and a call without job takes no action
+	 * (mcp_slot_ask()). _meta.askai.takes says so for the completion of
+	 * clients, with the empty action for a call without action. */
+	enum : uint64_t {
+		MCP_ASK_PROMPT       = 1 << 0,
+		MCP_ASK_SYSTEM       = 1 << 1,
+		MCP_ASK_MESSAGES     = 1 << 2,
+		MCP_ASK_BACKGROUND   = 1 << 3,
+		MCP_ASK_CONVERSATION = 1 << 4,
+		MCP_ASK_JOB          = 1 << 5,
+	};
+	static struct cstr_view const args[] = {
+		CSTR_VIEW_INIT("prompt"), CSTR_VIEW_INIT("system"), CSTR_VIEW_INIT("messages"),
+		CSTR_VIEW_INIT("background"), CSTR_VIEW_INIT("conversation"), CSTR_VIEW_INIT("job"),
+	};
+	struct cstr_view const verbs[] = { CSTR_VIEW(""), actions[ACTION_RESULT], actions[ACTION_CANCEL] };
+	uint64_t const asks = MCP_ASK_PROMPT | MCP_ASK_SYSTEM | MCP_ASK_MESSAGES | MCP_ASK_BACKGROUND |
+	                      (st->lending.of[KIND_NOTES] ? MCP_ASK_CONVERSATION : 0);
+	struct jb_form const forms[] = {
+		{ .args = asks,        .action = 0 },
+		{ .args = MCP_ASK_JOB, .action = 0 },
+		{ .args = MCP_ASK_JOB, .action = 1 },
+		{ .args = MCP_ASK_JOB, .action = 2 },
+	};
+	return jb_set_or_free(def, "_meta", jb_object(
+		"askai", jb_object("takes", jb_takes(verbs, args, forms, array_size(forms)), nullptr),
+		nullptr));
 }
 
 static struct json_object *
@@ -8260,7 +8290,17 @@ static struct json_object *
 mcp_jobs_client_definition (void const *service)
 {
 	(void)service;
-	return schema_tool("jobs",
+	/* The arguments of each action, for the completion of clients, as the
+	 * calls read them: cancel takes a job or a timer, not both
+	 * (mcp_slot_jobs_cancel()). */
+	static struct cstr_view const args[] = { CSTR_VIEW_INIT("job"), CSTR_VIEW_INIT("timer") };
+	static struct jb_form const forms[] = {
+		{ .args = 0,      .action = ACTION_LIST },
+		{ .args = 1 << 0, .action = ACTION_RESULT },
+		{ .args = 1 << 0, .action = ACTION_CANCEL },
+		{ .args = 1 << 1, .action = ACTION_CANCEL },
+	};
+	struct json_object *def = schema_tool("jobs",
 		"List your jobs and timers with action list. Get the result of a "
 		"finished job with action result. Cancel a running job or a pending "
 		"timer with action cancel.",
@@ -8272,6 +8312,9 @@ mcp_jobs_client_definition (void const *service)
 			                         "for cancel."),
 			nullptr),
 		CSTR_VIEW("action"));
+	return jb_set_or_free(def, "_meta", jb_object(
+		"askai", jb_object("takes", jb_takes(actions, args, forms, array_size(forms)), nullptr),
+		nullptr));
 }
 
 /* Returns the definition of wait that clients list with --client-jobs. */
