@@ -566,6 +566,26 @@ debruijn_plugin_uint (struct json_object const *val,
 	return e;
 }
 
+/* Reads the argument @p arg of the arguments @p of of a call into @p *n and
+ * returns 0, if the argument is a whole number from 0 to @p max, the
+ * largest value for the order @p order. Otherwise it ends the call of
+ * @p slot as failed with that range, and returns EINVAL.
+ */
+static int
+debruijn_plugin_upto (struct mcp_slot           *slot,
+                      struct json_object *const *of,
+                      enum debruijn_plugin_arg   arg,
+                      unsigned                   max,
+                      unsigned                   order,
+                      unsigned                  *n)
+{
+	int const e = debruijn_plugin_uint(of[arg], max, n);
+	if (e)
+		mcp_slot_tellf(slot, TOOL_FAILED, "The %s argument must be a whole number from 0 "
+		               "to %u for order %u.", debruijn_plugin_arg_names[arg].data, max, order);
+	return e;
+}
+
 /* Returns the arguments that a call needs whose action needs @p needs, if
  * the call gives the arguments @p seen. A call gives a sequence as seq, or
  * in place of seq as addr, or as order and rank.
@@ -759,13 +779,10 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 		seq = normal;
 	} else if (needs & A(RANK)) {
 		/* The call gives order, which is an order of the action. */
-		unsigned const last = debruijn_word_count(order) - 1U;
 		unsigned rank;
-		if (debruijn_plugin_uint(of[DEBRUIJN_PLUGIN_ARG_RANK], last, &rank)) {
-			mcp_slot_tellf(slot, TOOL_FAILED, "rank must be an integer from 0 to %u for order %u.",
-			               last, order);
+		if (debruijn_plugin_upto(slot, of, DEBRUIJN_PLUGIN_ARG_RANK,
+		                         debruijn_word_count(order) - 1U, order, &rank))
 			return;
-		}
 		int const e = debruijn_ordered(order, rank, 1, debruijn_plugin_store, &normal);
 		if (e) {
 			mcp_slot_fail(slot, e);
@@ -803,12 +820,9 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 		               name, rule->low, rule->high);
 		return;
 	}
-	if ((needs & A(MASK)) && debruijn_plugin_uint(of[DEBRUIJN_PLUGIN_ARG_MASK],
-	                                              debruijn_plugin_masks(order), &mask)) {
-		mcp_slot_tellf(slot, TOOL_FAILED, "The mask argument must be a whole number from 0 "
-		               "to %u for order %u.", debruijn_plugin_masks(order), order);
+	if ((needs & A(MASK)) && debruijn_plugin_upto(slot, of, DEBRUIJN_PLUGIN_ARG_MASK,
+	                                              debruijn_plugin_masks(order), order, &mask))
 		return;
-	}
 	if (((seen & A(FIRST)) && debruijn_plugin_uint(of[DEBRUIJN_PLUGIN_ARG_FIRST], UINT32_MAX,
 	                                               &first)) ||
 	    ((seen & A(LIMIT)) && (debruijn_plugin_uint(of[DEBRUIJN_PLUGIN_ARG_LIMIT], rule->cap,
