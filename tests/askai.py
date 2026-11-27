@@ -20208,6 +20208,21 @@ def check_debruijn(binary, up, debruijn):
                 "0\n1\n2\n5\n3\n7\n6\n4\n"
             values = ok(ai, action="windows", seq="0x0218a392cd3d5dbf", order=6).split()
             assert sorted(map(int, values)) == list(range(64)), values
+
+            # The windows of a sequence in a rotation, read from a string of
+            # the bits: the bits at the start follow the last bit.
+            def windows(value, order):
+                bits = 1 << order
+                text = f"{value:0{bits}b}" * 2
+                return "".join(f"{int(text[p:p + order], 2)}\n" for p in range(bits))
+
+            for value, order in ((0x3, 2), (0x09af, 4), (0x07dcd629, 5),
+                                 (0x021d16a7b37e4ae3, 6), (0x03f79d71b4cb0a89, 6)):
+                bits = 1 << order
+                for r in (0, 1, order - 1, order, bits - order, bits - 1):
+                    turned = (value << r | value >> (bits - r)) & ((1 << bits) - 1)
+                    assert ok(ai, action="windows", seq=hex(turned), order=order) == \
+                        windows(turned, order), hex(turned)
             # A sequence or a mask is a number as strtoll() reads it with the
             # base 0, after white space but without a + sign: hexadecimal
             # after 0x, binary after 0b, octal after 0, else decimal. A

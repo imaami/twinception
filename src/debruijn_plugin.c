@@ -528,6 +528,23 @@ debruijn_plugin_children (struct debruijn_plugin_out *out,
 	debruijn_plugin_end(out);
 }
 
+/* Returns the value of the order bits of @p seq from the bit @p index up,
+ * with the bit @p index as the least significant bit of the value. @p seq
+ * is a sequence of @p bits bits, 2^order, in any rotation. The index of a
+ * bit counts from the least significant bit, @p index is less than
+ * @p bits, and the bit above the most significant bit is bit 0.
+ */
+static unsigned
+debruijn_plugin_window (uint64_t seq,
+                        unsigned bits,
+                        unsigned index)
+{
+	/* The first shift moves the bit index to bit 0, and the second moves
+	 * the bits under index to above the top bit. bits is 2^order, so
+	 * bits - 1 is a mask of order bits. */
+	return (unsigned)((seq >> index | seq << ((bits - index) & (bits - 1U))) & (bits - 1U));
+}
+
 /* windows: for each place in @p seq, the value of the @p order bits that
  * start there. The sequence can be in any rotation. The bits after the end
  * of the sequence are the bits at its start.
@@ -537,17 +554,13 @@ debruijn_plugin_windows (struct debruijn_plugin_out *out,
                          uint64_t                    seq,
                          unsigned                    order)
 {
-	/* Place 0 is the most significant bit. A window that runs over the end
-	 * of the sequence reads on at its start: the bit positions count down
-	 * modulo the 2^order bits. */
+	/* Place 0 is the most significant bit, the bit bits - 1. The order
+	 * bits that start at a place end order - 1 bits under it, at the bit
+	 * bits - order - place, modulo bits. */
 	unsigned const bits = 1U << order;
-	for (unsigned place = 0; place < bits; ++place) {
-		unsigned const top = bits - 1U - place;
-		unsigned value = 0;
-		for (unsigned i = 0; i < order; ++i)
-			value = value << 1 | (unsigned)(seq >> ((top - i) & (bits - 1U)) & 1U);
-		debruijn_plugin_line(out, "%u\n", value);
-	}
+	for (unsigned place = 0; place < bits; ++place)
+		debruijn_plugin_line(out, "%u\n", debruijn_plugin_window(
+			seq, bits, (bits - order - place) & (bits - 1U)));
 	debruijn_plugin_end(out);
 }
 
