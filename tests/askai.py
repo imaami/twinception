@@ -20204,6 +20204,24 @@ def check_debruijn(binary, up, debruijn):
             assert ok(ai, action="children", seq="0x09af", order=4, limit=128,
                       offset=100) == whole[100:]
             assert ok(ai, action="children", seq="0x09af", order=4, first=128) == ""
+            # first can be any whole number, and a first past the last row
+            # is no error.
+            for first in (32768, 4294967295, 4294967296, 18446744073709551615):
+                assert ok(ai, action="children", seq="0x04653adf", first=first) == "", first
+                assert ok(ai, action="ordered", order=5, first=first) == "", first
+            # An output of several writes: 1000 children are 19000 bytes, and
+            # the plugin writes about 4000 bytes at a time. Each line is the
+            # output of expand for the mask of the line.
+            many = ok(ai, action="children", seq="0x04653adf", order=5, first=31000,
+                      limit=1000)
+            lines = many.splitlines()
+            assert len(many) == 19000 and len(lines) == 1000 and len(set(lines)) == 1000, \
+                (len(many), len(lines))
+            for k in (0, 1, 205, 206, 207, 411, 412, 413, 999):
+                assert ok(ai, action="expand", seq="0x04653adf", mask=31000 + k) == \
+                    lines[k] + "\n", k
+            assert ok(ai, action="children", seq="0x04653adf", order=5, first=31000,
+                      limit=1000, offset=7777) == many[7777:]
             # Each value of order bits is in the sequence once.
             assert ok(ai, action="windows", seq="0x17", order=3) == \
                 "0\n1\n2\n5\n3\n7\n6\n4\n"
@@ -20368,8 +20386,18 @@ def check_debruijn(binary, up, debruijn):
             assert ok(ai, action="ordered", order=6, first=67108862, limit=256) == (
                 "0x03f79d71b4cb0915 1.7.127.32765\n0x03f79d71b4cb0a89 1.7.127.32767\n")
             assert ok(ai, action="ordered", order=6, first=4294967295) == ""
+            # A page of several writes: each row is the row of unrank.
+            page = ok(ai, action="ordered", order=6, first=1234500, limit=256)
+            rows6 = page.splitlines(keepends=True)
+            assert len(rows6) == 256 and len(page) > 8000, (len(rows6), len(page))
+            for k in (0, 1, 67, 100, 101, 102, 203, 204, 255):
+                assert ok(ai, action="unrank", order=6, rank=1234500 + k) == rows6[k], k
 
             no_sequence = "0x1e is no sequence of order 3."
+
+            def twice(action):
+                return f"{action} takes one sequence: seq, or addr, or order and rank."
+
             no_number = ("The seq argument must be a string of a 64-bit number without a "
                          "+ sign: hexadecimal after 0x, binary after 0b, octal after 0, else "
                          "decimal.")
@@ -20403,6 +20431,24 @@ def check_debruijn(binary, up, debruijn):
                     ({"action": "expand", "seq": "0x0218a392cd3d5dbf", "mask": 0},
                      "0x0218a392cd3d5dbf is a sequence of order 6, and expand takes the orders "
                      "2 to 5."),
+                    ({"action": "children", "seq": "0x0218a392cd3d5dbf"},
+                     "0x0218a392cd3d5dbf is a sequence of order 6, and children takes the "
+                     "orders 2 to 5."),
+                    ({"action": "children", "order": 6, "rank": 0},
+                     "The order argument must be a whole number from 2 to 5 for children."),
+                    ({"action": "expand", "order": 6, "rank": 0, "mask": 0},
+                     "The order argument must be a whole number from 2 to 5 for expand."),
+                    ({"action": "rank", "seq": "1"},
+                     "0x1 is no sequence of any order from 2 to 6."),
+                    ({"action": "rank", "seq": "2"},
+                     "0x2 is no sequence of any order from 2 to 6."),
+                    ({"action": "rank", "seq": "4"}, "0x4 is no sequence of order 2."),
+                    ({"action": "children", "seq": "0x17", "first": -1},
+                     "first must be a whole number from 0, and limit a whole number from "
+                     "1 to 32768."),
+                    ({"action": "children", "seq": "0x17", "first": 1.5},
+                     "first must be a whole number from 0, and limit a whole number from "
+                     "1 to 32768."),
                     ({"action": "collapse", "seq": "0x9"},
                      "0x9 is a sequence of order 2, and collapse takes the orders 3 to 6."),
                     ({"action": "expand", "seq": "0x17", "mask": 8},
@@ -20411,14 +20457,19 @@ def check_debruijn(binary, up, debruijn):
                     ({"action": "windows"}, "windows needs the argument seq."),
                     ({"action": "windows", "order": 3}, "windows needs the argument seq."),
                     ({"action": "windows", "rank": 0}, "windows needs the argument order."),
-                    ({"action": "windows", "seq": "0x17", "addr": "0"},
-                     "windows takes no argument seq."),
+                    ({"action": "windows", "seq": "0x17", "addr": "0"}, twice("windows")),
                     ({"action": "windows", "seq": "0x17", "order": 3, "rank": 0},
-                     "windows takes no argument seq."),
+                     twice("windows")),
+                    ({"action": "windows", "addr": "0", "rank": 0}, twice("windows")),
+                    ({"action": "cycles", "seq": "0x17", "addr": "0", "rank": 0, "rot": 0},
+                     twice("cycles")),
+                    # A member that is null is in the call.
+                    ({"action": "windows", "seq": "0x17", "addr": None}, twice("windows")),
+                    ({"action": "windows", "seq": "0x17", "rank": None}, twice("windows")),
+                    ({"action": "windows", "seq": "0x17", "mask": None},
+                     "windows takes no argument mask."),
                     ({"action": "windows", "addr": "0", "order": 3},
                      "windows takes no argument order."),
-                    ({"action": "windows", "addr": "0", "rank": 0},
-                     "windows takes no argument rank."),
                     ({"action": "windows", "order": 3, "rank": 2},
                      "The rank argument must be a whole number from 0 to 1 for order 3."),
                     ({"action": "collapse", "order": 2, "rank": 0},
@@ -20467,8 +20518,7 @@ def check_debruijn(binary, up, debruijn):
                      "expand needs the argument mask."),
                     ({"action": "collapse", "seq": "0x17", "order": 3, "mask": 1},
                      "collapse takes no argument mask."),
-                    ({"action": "path", "addr": "1", "seq": "0x17"},
-                     "path takes no argument seq."),
+                    ({"action": "path", "addr": "1", "seq": "0x17"}, twice("path")),
                     ({"action": "windows", "seq": "0x17", "order": 3, "first": 1},
                      "windows takes no argument first."),
                     ({"action": "expand", "seq": "0x17", "order": 6, "mask": 0},

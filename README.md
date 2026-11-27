@@ -2246,7 +2246,9 @@ sequence as a number. `addr` is the address of the sequence. `order` and
 `rank` are the rank of the sequence in the order: the zero-based position
 among the sequences of that order, sorted as unsigned numbers. So
 `seq:"0x09af"`, `addr:"0.0"` and `order:4, rank:0` are the same sequence.
-`unrank` takes `order` and `rank` only, and `ordered` takes no sequence.
+A call with two of the forms is refused. The root is no address: pass it as
+`seq:"0x3"` or as `order:2, rank:0`. `unrank` takes `order` and `rank` only,
+and `ordered` takes no sequence.
 
 `seq`, and each mask of `addr`, is a number as `strtoll()` reads it with the
 base 0, but without a `+` sign: hexadecimal after `0x`, binary after `0b`,
@@ -2291,7 +2293,8 @@ For example, `unrank` with `order:6, rank:1234567` returns
 `0x021d16a7b37e4ae3 0.1.100.10548`; `rank` with `addr:"0.1.100.10548"`
 returns `1234567`. The orders 2 through 6 contain 1, 2, 16, 2048 and
 67108864 sequences respectively. `unrank` refuses a rank outside its order;
-`ordered` stops at the end and returns no rows for `first` past the last rank.
+`ordered` stops at the end and returns no rows for `first` past the last rank,
+and `children` none for `first` past the last mask.
 It seeks by counting whole prefix blocks, not by visiting earlier sequences.
 `children` still enumerates a single parent's children in *mask* order.
 

@@ -39,8 +39,10 @@
  * The sequence of an action is in the arguments of a call in one of three
  * forms (debruijn_plugin_needs()): the argument seq is the sequence as a
  * number, the argument addr is the address of the sequence, and the
- * arguments order and rank are the rank of the sequence in the order.
- * unrank takes order and rank only, and ordered takes no sequence.
+ * arguments order and rank are the rank of the sequence in the order. A
+ * call with two of the forms is refused. The root is no address, because
+ * an address is at least one mask. unrank takes order and rank only, and
+ * ordered takes no sequence.
  *
  * seq, and each mask of addr, is a number as strtoll() and strtoull() read
  * it with the base 0, but without a + sign (debruijn_plugin_number()):
@@ -65,6 +67,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdbit.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -138,6 +141,16 @@ static struct cstr_view const debruijn_plugin_arg_names[] = {
         X(ORDERED,  "ordered",  A(ORDER),           2, 6, 256)
 static_assert(DEBRUIJN_MIN_ORDER == 2 && DEBRUIJN_MAX_ORDER == 6, "the orders in the list");
 
+/* A call of each action contains seq, in one of its forms, or order, so
+ * the order of each call is known. low to high are orders of the library.
+ */
+#define DEBRUIJN_PLUGIN_ACTION_CHECK(id, name, needs, low, high, cap)          \
+        static_assert(((needs) & (A(SEQ) | A(ORDER))) &&                       \
+                      DEBRUIJN_MIN_ORDER <= (low) && (low) <= (high) &&        \
+                      (high) <= DEBRUIJN_MAX_ORDER, name);
+DEBRUIJN_PLUGIN_ACTION_LIST(DEBRUIJN_PLUGIN_ACTION_CHECK)
+#undef DEBRUIJN_PLUGIN_ACTION_CHECK
+
 #define DEBRUIJN_PLUGIN_ACTION_ENUM(id, ...) DEBRUIJN_PLUGIN_##id,
 enum debruijn_plugin_action : uint8_t {
 	DEBRUIJN_PLUGIN_ACTION_LIST(DEBRUIJN_PLUGIN_ACTION_ENUM) DEBRUIJN_PLUGIN_ACTIONS
@@ -151,9 +164,9 @@ static struct cstr_view const debruijn_plugin_action_names[] = {
 /* The rule of an action: the columns of its row in the list of actions. */
 struct debruijn_plugin_rule {
 	uint32_t needs;
-	uint16_t cap;
-	uint8_t  low;
-	uint8_t  high;
+	unsigned cap;
+	unsigned low;
+	unsigned high;
 };
 
 #define DEBRUIJN_PLUGIN_ACTION_RULE(id, name, needs_, low_, high_, cap_) \
@@ -345,9 +358,11 @@ debruijn_plugin_address (struct cstr_view  text,
 }
 
 /* Returns the smallest order n from 2 to 6 with 2^n at least the bit width
- * of @p seq, or 0 for a sequence under 2 bits wide. A rotation of a
- * sequence of order n is 2^n - n to 2^n bits wide: the n zero bits of the
- * sequence can be at its top, in whole or in part, or not.
+ * of @p seq, for @p seq from 3. A rotation of a sequence of order n is
+ * 2^n - n to 2^n bits wide: the n zero bits of the sequence can be at its
+ * top, in whole or in part, or not. Returns 0 for 0, and 1 for 1 and 2:
+ * these numbers are rotations of no sequence, and their orders are no
+ * orders of the library.
  */
 static unsigned
 debruijn_plugin_order (uint64_t seq)
@@ -360,7 +375,7 @@ debruijn_plugin_order (uint64_t seq)
 }
 
 /* Refuses the number @p seq, which is no rotation of a sequence of the
- * order @p order, or of any order if @p order is 0.
+ * order @p order, or of any order if @p order is under 2.
  */
 static void
 debruijn_plugin_no_sequence (struct mcp_slot *slot,
@@ -372,7 +387,7 @@ debruijn_plugin_no_sequence (struct mcp_slot *slot,
 		               debruijn_plugin_digits(order), seq, order);
 	else
 		mcp_slot_tellf(slot, TOOL_FAILED, "0x%" PRIx64 " is no sequence of any order from "
-		               "%u to %u.", seq, DEBRUIJN_MIN_ORDER, DEBRUIJN_MAX_ORDER);
+		               "%d to %d.", seq, DEBRUIJN_MIN_ORDER, DEBRUIJN_MAX_ORDER);
 }
 
 /* expand: the child of @p seq for @p mask. */
@@ -519,19 +534,19 @@ static void
 debruijn_plugin_children (struct debruijn_plugin_out *out,
                           uint64_t                    seq,
                           unsigned                    order,
-                          uint64_t                    first,
-                          uint64_t                    limit)
+                          unsigned                    first,
+                          unsigned                    limit)
 {
 	struct debruijn_generator const seed = debruijn_generator(seq, order);
 	if (seed.error) {
 		debruijn_plugin_no_sequence(out->slot, seq, order);
 		return;
 	}
-	uint64_t const all = (uint64_t)debruijn_plugin_masks(order) + 1;
-	uint64_t const end = first < all && limit < all - first ? first + limit : all;
-	for (uint64_t mask = first; !out->e && mask < end; ++mask) {
+	unsigned const all = debruijn_plugin_masks(order) + 1U;
+	unsigned const end = first < all && limit < all - first ? first + limit : all;
+	for (unsigned mask = first; !out->e && mask < end; ++mask) {
 		uint64_t child = 0;
-		out->e = debruijn_generate(&child, &seed, (unsigned)mask);
+		out->e = debruijn_generate(&child, &seed, mask);
 		debruijn_plugin_line(out, "0x%0*" PRIx64 "\n", debruijn_plugin_digits(order + 1U),
 		                     child);
 	}
@@ -646,16 +661,17 @@ debruijn_plugin_upto (struct mcp_slot           *slot,
 	return e;
 }
 
-/* Returns the arguments that a call must contain, for an action whose rule
- * lists @p needs and a call that contains the arguments @p seen. The
- * sequence of a call is the argument seq. A call that contains addr must
+/* Returns the arguments that a call must contain, for an action with the
+ * rule @p rule and a call that contains the arguments @p seen: the needs
+ * of the rule. If they contain seq, a call that contains addr must
  * contain addr in place of seq, and a call that contains rank must contain
  * order and rank in place of seq.
  */
 static uint64_t
-debruijn_plugin_needs (uint64_t needs,
-                       uint64_t seen)
+debruijn_plugin_rule_needs (struct debruijn_plugin_rule const *rule,
+                            uint64_t                           seen)
 {
+	uint64_t const needs = rule->needs;
 	if (!(needs & A(SEQ)) || !(seen & (A(ADDR) | A(RANK))))
 		return needs;
 	return (needs & ~A(SEQ)) | (seen & A(ADDR) ? A(ADDR) : A(ORDER) | A(RANK));
@@ -667,8 +683,8 @@ debruijn_plugin_needs (uint64_t needs,
  * and limit if the cap of the rule is not 0.
  */
 static uint64_t
-debruijn_plugin_takes (struct debruijn_plugin_rule const *rule,
-                       uint64_t                           needs)
+debruijn_plugin_rule_takes (struct debruijn_plugin_rule const *rule,
+                            uint64_t                           needs)
 {
 	return needs | A(ACTION) | A(OFFSET) | (needs & A(SEQ) ? A(ORDER) : 0) |
 	       (rule->cap ? A(FIRST) | A(LIMIT) : 0);
@@ -694,9 +710,9 @@ debruijn_plugin_definition (void const *service)
 		 * form if its rule lists seq. */
 		size_t const sets = rule->needs & A(SEQ) ? array_size(seen) : 1;
 		for (size_t form = 0; form < sets; ++form) {
-			uint64_t const needs = debruijn_plugin_needs(rule->needs, seen[form]);
+			uint64_t const needs = debruijn_plugin_rule_needs(rule, seen[form]);
 			forms[n++] = (struct jb_form){
-				.args   = debruijn_plugin_takes(rule, needs) & ~A(ACTION),
+				.args   = debruijn_plugin_rule_takes(rule, needs) & ~A(ACTION),
 				.action = i,
 			};
 		}
@@ -759,7 +775,8 @@ debruijn_plugin_definition (void const *service)
 		"prefix on the first mask is the base of all masks, as in "
 		"0b1.110.1010101.111110000011111. The masks are 1, 3, 7 and 15 bits wide, in "
 		"this order. A negative mask stands for the two's complement of the number in "
-		"the bits of the mask, so -1 is the largest mask.\"},"
+		"the bits of the mask, so -1 is the largest mask. The root 0x3 is no address: "
+		"pass it as seq, or as order 2 and rank 0.\"},"
 		"\"rank\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":67108863,\"description\":"
 		"\"The sequence as a rank in order, in place of seq: less than 1, 2, 16, 2048 or "
 		"67108864 for the orders 2 to 6.\"},"
@@ -813,8 +830,13 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 	}
 	struct debruijn_plugin_rule const *const rule = &debruijn_plugin_rules[action];
 	char const *const name = debruijn_plugin_action_names[action].data;
-	uint64_t const needs = debruijn_plugin_needs(rule->needs, seen);
-	uint64_t const takes = debruijn_plugin_takes(rule, needs);
+	if ((rule->needs & A(SEQ)) && stdc_count_ones(seen & (A(SEQ) | A(ADDR) | A(RANK))) > 1) {
+		mcp_slot_tellf(slot, TOOL_FAILED, "%s takes one sequence: seq, or addr, or order "
+		               "and rank.", name);
+		return;
+	}
+	uint64_t const needs = debruijn_plugin_rule_needs(rule, seen);
+	uint64_t const takes = debruijn_plugin_rule_takes(rule, needs);
 	uint64_t const wrong = (needs & ~seen) | (seen & ~takes);
 	if (wrong) {
 		unsigned const arg = stdc_trailing_zeros(wrong);
@@ -831,7 +853,7 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 	unsigned order = 0;
 	unsigned mask = 0;
 	unsigned rot = 0;
-	unsigned first = 0;
+	uint64_t from = 0;
 	unsigned limit = DEBRUIJN_PLUGIN_LIMIT;
 	bool const given = seen & A(ORDER);
 	if (given && (debruijn_plugin_uint(of[DEBRUIJN_PLUGIN_ARG_ORDER], rule->high, &order) ||
@@ -906,14 +928,17 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 	if ((needs & A(ROT)) && debruijn_plugin_upto(slot, of, DEBRUIJN_PLUGIN_ARG_ROT,
 	                                             (1U << order) - 1U, order, &rot))
 		return;
-	if (((seen & A(FIRST)) && debruijn_plugin_uint(of[DEBRUIJN_PLUGIN_ARG_FIRST], UINT32_MAX,
-	                                               &first)) ||
+	if (((seen & A(FIRST)) && jb_uint_checked(of[DEBRUIJN_PLUGIN_ARG_FIRST], UINT64_MAX,
+	                                          &from)) ||
 	    ((seen & A(LIMIT)) && (debruijn_plugin_uint(of[DEBRUIJN_PLUGIN_ARG_LIMIT], rule->cap,
 	                                                &limit) || !limit))) {
 		mcp_slot_tellf(slot, TOOL_FAILED, "first must be a whole number from 0, and limit a "
 		               "whole number from 1 to %u.", rule->cap);
 		return;
 	}
+	/* The rows of an action are fewer than UINT_MAX, so each first from
+	 * UINT_MAX on is past the last row. */
+	unsigned const first = from < UINT_MAX ? (unsigned)from : UINT_MAX;
 	if (mcp_slot_offset(slot, args))
 		return;
 	struct debruijn_plugin_out out = { .slot = slot };
