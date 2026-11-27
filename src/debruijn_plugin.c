@@ -197,7 +197,7 @@ static struct debruijn_plugin_rule const debruijn_plugin_rules[] = {
  * watchdog of askai reports a turn of more than 20 ms. 32768 children of a
  * sequence of order 5 take 11 ms. A child of a sequence of order 6 or 7 is
  * two or four limbs, and 32768 of them take 28 or 69 ms. 8192 and 4096 of
- * them take 7 and 9 ms.
+ * them take about 8 ms.
  */
 static unsigned
 debruijn_plugin_cap (size_t   action,
@@ -1308,7 +1308,8 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 		break;
 	case DEBRUIJN_PLUGIN_RANK:
 		/* The rank of a sequence that the call contains as a rank is
-		 * that argument, which no later argument replaced in number. */
+		 * that argument. number is still the rank, because rank takes
+		 * neither mask nor rot. */
 		if (needs & A(RANK)) {
 			debruijn_plugin_line(&out, "%s\n", debruijn_plugin_decimal(&number).text);
 			debruijn_plugin_end(&out);

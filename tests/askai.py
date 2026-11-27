@@ -20733,6 +20733,10 @@ def check_debruijn(binary, up, debruijn):
                     ({"action": "windows", "seq": "-" + "9" * 400, "order": 8}, too_wide),
                     ({"action": "rank", "seq": "0x1000000000000000009af", "order": 4},
                      "0x1000000000000000009af is no sequence of order 4."),
+                    ({"action": "rank", "seq": "0x1" + first7, "order": 7},
+                     f"0x1{first7} is no sequence of order 7."),
+                    ({"action": "collapse", "seq": "0x1" + "0" * 31 + first7, "order": 7},
+                     "0x1" + "0" * 31 + first7 + " is no sequence of order 7."),
                     ({"action": "children", "seq": "0x04653adf", "limit": 32769},
                      "first must be a whole number from 0, and limit a whole number from "
                      "1 to 32768."),
