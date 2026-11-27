@@ -72,8 +72,8 @@ debruijn_wide_window (struct debruijn_wide const *seq,
 {
 	unsigned const bits = 1U << order;
 	uint64_t const low = seq->limb[0];
-	/* One limb with bits to spare: both parts of the value are in it. */
-	if (bits < 64U)
+	/* A sequence of one limb: both parts of the value are in the limb. */
+	if (bits <= 64U)
 		return (unsigned)((low >> index | low << ((bits - index) & (bits - 1U))) &
 		                  (bits - 1U));
 	unsigned const limb = index >> 6U;

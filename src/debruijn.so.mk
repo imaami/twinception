@@ -2,11 +2,14 @@ override SRC_debruijn.so := \
   debruijn_plugin.c         \
   debruijn.c                \
   debruijn_order.c          \
+  debruijn_wide.c           \
+  debruijn_wide_order.c     \
   util.c
 
 # A plugin has no constructor and no writable data of its own (plugin.h).
 # The C start files would add both.
 override LIB_debruijn.so := \
   json-c                    \
+  gmp                       \
   -nostartfiles             \
   -Wl,-z,relro,-z,now

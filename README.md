@@ -27,6 +27,7 @@ direction for shared notes, stable members, and multiple execution routes.
 - C23 compiler
 - libcurl
 - json-c
+- GMP (for the plugin `debruijn.so`)
 - GNU Readline (for `askai-cli`)
 - utf8proc (for `askai-cli`)
 - OpenSSL 3.5 or later (libssl, libcrypto), and its `openssl` command for the
@@ -2219,9 +2220,14 @@ can differ. The `keep` of a request for a short link is a day.
 ### The debruijn plugin
 
 `debruijn.so` adds one tool, `debruijn`, that explores the binary de Bruijn
-sequences of the orders 2 to 6. `make debruijn.so` builds it from
-`src/debruijn_plugin.c`, the mask construction in `src/debruijn.c` and the
-numeric ordering in `src/debruijn_order.c`. The plugin has no options:
+sequences of the orders 2 to 8. `make debruijn.so` builds it from
+`src/debruijn_plugin.c` and two libraries of the same algorithms. For the
+orders 2 to 6, a sequence is one 64-bit number: the mask construction is in
+`src/debruijn.c` and the numeric ordering in `src/debruijn_order.c`. For the
+orders 7 and 8, a sequence is 128 or 256 bits in 64-bit limbs:
+`src/debruijn_wide.c` and `src/debruijn_wide_order.c`. The plugin links
+libgmp, which converts the digits of a number of more than 64 bits. The
+plugin has no options:
 
 ```json
 { "path": "/usr/libexec/askai/debruijn.so" }
@@ -2231,9 +2237,9 @@ A sequence of order n is 2^n bits long, and every value of n bits is in the
 sequence once, also across the end of the sequence to its start. The
 sequences of the tool start with n zero bits, and the output shows them as
 hexadecimal digits, such as `0x09af` for order 4. The sequence `0x3` of
-order 2 is the root of a tree. A sequence of order n from 2 to 5 is the
-parent of one sequence of order n+1 for each mask: 2, 8, 128 and 32768
-children for the orders 2, 3, 4 and 5. A sequence of order 3 to 6 is the
+order 2 is the root of a tree. A sequence of order n from 2 to 7 is the
+parent of one sequence of order n+1 for each mask: 2, 8, 128, 32768, 2^31
+and 2^63 children for the orders 2 to 7. A sequence of order 3 to 8 is the
 child of exactly one sequence. The address of a sequence is the masks on the
 way from the root, such as `1.7.127.32767`. The masks 0 lead to the
 numerically first sequence of each order and the largest masks to the last:
@@ -2250,15 +2256,23 @@ A call with two of the forms is refused. The root is no address: pass it as
 `seq:"0x3"` or as `order:2, rank:0`. `unrank` takes `order` and `rank` only,
 and `ordered` takes no sequence.
 
-`seq`, and each mask of `addr`, is a number as `strtoll()` reads it with the
-base 0, but without a `+` sign: hexadecimal after `0x`, binary after `0b`,
-octal after `0`, and else decimal. So `0x17`, `0b10111`, `027` and `23` are
-the same sequence, while `17` is `0x11`, and `09af` is not a number. A
-prefix on the leftmost mask of an address is the base of all its masks:
-`0b1.110.1010101.111110000011111` is `1.6.85.31775`, and `0x1.7.7f.7fff` is
-`1.7.127.32767`. A lone `0` has no prefix, so `0.1.100.10548` is decimal.
-Without a prefix on the leftmost mask, each mask is read in the base of its
-own prefix.
+`seq`, and each mask of `addr`, is a number of up to 256 bits in the
+notation that `strtoll()` reads with the base 0, but without a `+` sign:
+hexadecimal after `0x`, binary after `0b`, octal after `0`, and else
+decimal. So `0x17`, `0b10111`, `027` and `23` are the same sequence, while
+`17` is `0x11`, and `09af` is not a number. A prefix on the leftmost mask of
+an address is the base of all its masks: `0b1.110.1010101.111110000011111`
+is `1.6.85.31775`, and `0x1.7.7f.7fff` is `1.7.127.32767`. A lone `0` has no
+prefix, so `0.1.100.10548` is decimal. Without a prefix on the leftmost
+mask, each mask is read in the base of its own prefix.
+
+`rank`, `mask`, `rot` and `first` are whole numbers: JSON integers, or
+strings in the same notation. A rank of order 8 is up to 120 bits wide, and
+a JSON integer is at most 2^64 - 1: `askai` refuses a request with a larger
+one. A client that reads JSON numbers as doubles changes an integer from
+2^53 on, so such a number is better passed as a string. `askai-cli` sends a
+number that is no JSON integer of 64 bits, such as `0x7fff` or a rank of 30
+digits, as a string.
 
 A negative number stands for the unsigned number with the same bits in the
 width of the sequence or mask: 2^n bits for a sequence of order n, and
@@ -2272,31 +2286,38 @@ action rotates `seq` to start with its n zero bits before it reads it, and
 with `seq`. Without `order`, the order is computed from the bit width of
 `seq`: a sequence of order n in any rotation is 2^n - n to 2^n bits wide, so
 2 to 4 bits is order 2, 5 to 8 bits order 3, 12 to 16 bits order 4, 27 to
-32 bits order 5 and 58 to 64 bits order 6.
+32 bits order 5, 58 to 64 bits order 6, 121 to 128 bits order 7 and 248 to
+256 bits order 8.
 
 The output of an action is its result alone, as the output of a calculator:
 
 | Action | Arguments | Output |
 | ------ | --------- | ------ |
-| `expand` | a sequence of order 2 to 5, `mask` | the child, such as `0x07dcd629` |
-| `collapse` | a sequence of order 3 to 6 | the parent and the mask of the sequence in the parent, such as `0x0f65 127` |
-| `path` | a sequence of order 3 to 6 | the sequences on the way from the root to the sequence, without the root, in hexadecimal without `0x`, such as `1d.0f65.07dcd629.03f79d71b4cb0a89` |
-| `address` | a sequence of order 3 to 6 | the address, such as `1.7.127.32767` |
-| `children` | a sequence of order 2 to 5, `first`, `limit` | the children from the mask `first` on, at most `limit` (64 by default), one on a line |
-| `windows` | a sequence of order 2 to 6 | for each bit index from 0, the least significant bit, the value of the n bits from the index up for order n, one on a line |
-| `cycles` | a sequence of order 2 to 6, `rot` | the cycles of the bit indexes of the sequence after a rotation to the left by `rot` bits, one cycle on a line, such as `0 15 14 12` |
-| `rank` | a sequence of order 2 to 6 | zero-based rank among *all* normalized sequences of that order, sorted as unsigned integers |
-| `unrank` | `order` 2 to 6, `rank` | the sequence and its dotted decimal mask address, separated by a space; the root is just `0x3` |
-| `ordered` | `order` 2 to 6, optional `first` and `limit` | consecutive `unrank` rows from rank `first` (default 0), at most `limit` (1 to 256, default 64) |
+| `expand` | a sequence of order 2 to 7, `mask` | the child, such as `0x07dcd629` |
+| `collapse` | a sequence of order 3 to 8 | the parent and the mask of the sequence in the parent, such as `0x0f65 127` |
+| `path` | a sequence of order 3 to 8 | the sequences on the way from the root to the sequence, without the root, in hexadecimal without `0x`, such as `1d.0f65.07dcd629.03f79d71b4cb0a89` |
+| `address` | a sequence of order 3 to 8 | the address, such as `1.7.127.32767` |
+| `children` | a sequence of order 2 to 7, `first`, `limit` | the children from the mask `first` on, at most `limit` (64 by default), one on a line |
+| `windows` | a sequence of order 2 to 8 | for each bit index from 0, the least significant bit, the value of the n bits from the index up for order n, one on a line |
+| `cycles` | a sequence of order 2 to 8, `rot` | the cycles of the bit indexes of the sequence after a rotation to the left by `rot` bits, one cycle on a line, such as `0 15 14 12` |
+| `rank` | a sequence of order 2 to 8 | zero-based rank among *all* normalized sequences of that order, sorted as unsigned integers, in decimal |
+| `unrank` | `order` 2 to 8, `rank` | the sequence and its dotted decimal mask address, separated by a space; the root is just `0x3` |
+| `ordered` | `order` 2 to 8, optional `first` and `limit` | consecutive `unrank` rows from rank `first` (default 0), at most `limit` (1 to 256, default 64) |
 
 For example, `unrank` with `order:6, rank:1234567` returns
 `0x021d16a7b37e4ae3 0.1.100.10548`; `rank` with `addr:"0.1.100.10548"`
-returns `1234567`. The orders 2 through 6 contain 1, 2, 16, 2048 and
-67108864 sequences respectively. `unrank` refuses a rank outside its order;
-`ordered` stops at the end and returns no rows for `first` past the last rank,
-and `children` none for `first` past the last mask.
-It seeks by counting whole prefix blocks, not by visiting earlier sequences.
-`children` still enumerates a single parent's children in *mask* order.
+returns `1234567`. The orders 2 through 8 contain 1, 2, 16, 2048, 67108864,
+2^57 and 2^120 sequences respectively. `unrank` refuses a rank outside its
+order; `ordered` stops at the end and returns no rows for `first` past the
+last rank, and `children` none for `first` past the last mask. It seeks by
+counting whole prefix blocks, not by visiting earlier sequences. `children`
+still enumerates a single parent's children in *mask* order.
+
+The count of a block of sequences is a determinant. For the orders 2 to 6
+the tool computes each determinant anew. For the orders 7 and 8 it stores
+the inverse of the matrix, with all numbers modulo the prime 2^127 - 1, and
+changes it at each step, so that `rank` or a page of `ordered` takes about a
+millisecond at order 7 and about 10 milliseconds at order 8.
 
 `cycles` rotates the sequence left by `rot` bits, from 0 to 2^n - 1, and
 reads the result by bit index. Index 0 is the least significant bit. The

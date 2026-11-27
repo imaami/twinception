@@ -10,8 +10,9 @@
  * read the manifest that PLUGIN_MANIFEST() puts into each of them. It
  * never unloads a plugin.
  *
- * A plugin exports only askai_plugin. It calls only json-c, libc and the
- * functions that askai exports (src/export.h). It has no constructor, no
+ * A plugin exports only askai_plugin. It calls only json-c, libc, the
+ * functions that askai exports (src/export.h), and a library that its make
+ * rules name, as debruijn.so calls libgmp. It has no constructor, no
  * mutable static variable and no thread-local variable. It starts no
  * thread and no process, installs no signal handler, changes no setting of
  * the process, loads no other object, and never blocks or exits. A call

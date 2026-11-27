@@ -20090,8 +20090,9 @@ def ce_records(text):
 
 def check_debruijn(binary, up, debruijn):
     """The debruijn plugin (src/debruijn_plugin.c): the tool debruijn with
-    each action, against the examples of the library that it uses
-    (src/debruijn.h), and the arguments that it refuses."""
+    each action, against the examples of the libraries that it uses
+    (src/debruijn.h for the orders 2 to 6, src/debruijn_wide.h for the
+    orders 7 and 8), and the arguments that it refuses."""
     debruijn = os.path.realpath(debruijn)
 
     def call(ai, **arguments):
@@ -20206,7 +20207,8 @@ def check_debruijn(binary, up, debruijn):
             assert ok(ai, action="children", seq="0x09af", order=4, first=128) == ""
             # first can be any whole number, and a first past the last row
             # is no error.
-            for first in (32768, 4294967295, 4294967296, 18446744073709551615):
+            for first in (32768, 4294967295, 4294967296, 18446744073709551615,
+                          "18446744073709551616", "0x1" + "0" * 40, str(1 << 255)):
                 assert ok(ai, action="children", seq="0x04653adf", first=first) == "", first
                 assert ok(ai, action="ordered", order=5, first=first) == "", first
             # An output of several writes: 1000 children are 19000 bytes, and
@@ -20400,14 +20402,158 @@ def check_debruijn(binary, up, debruijn):
             for k in (0, 1, 67, 100, 101, 102, 203, 204, 255):
                 assert ok(ai, action="unrank", order=6, rank=1234500 + k) == rows6[k], k
 
+            # The orders 7 and 8, whose sequences are 128 and 256 bits long.
+            # The values are those of a port of src/debruijn.c and
+            # src/debruijn_order.c to Python integers: the sequences of the
+            # masks 0 and of the largest masks, which are the first and the
+            # last of their orders, and rows of a sequence, its parent, its
+            # mask and its rank.
+            first6, last6 = "0218a392cd3d5dbf", "03f79d71b4cb0a89"
+            first7, last7 = "01061438916347932a5cd9d3ead7b77f", "01fdf3d78edd3970d9ab464c582a5091"
+            first8 = "00818283848586878898a8b8c8d8e8f929395969799a9b9d9e9faaeb6bedeeff"
+            last8 = "00ff7e7d7c7b7a79787767574737271706d6c6a6968665646261605514941211"
+            wide = (("01c1729d21af768ac9be7896c6611fd5", "034e4aef0b6623f5", 647892279,
+                     108577079836213153),
+                    ("011641989d73e56f0f497f768535471b", "03990ad4ba278dfb", 207388624,
+                     11688136508633938),
+                    ("009f2fb8a24c8b9c0f4eca56e8c6f6bbf0eb106a690b36c157984725a19e3fd5",
+                     "01c1729d21af768ac9be7896c6611fd5", 691672907343361484,
+                     323763803835137070802578622364566864),
+                    ("00b1e655d52618b827d7842b2281ad0ff241df119a74b7397eecf44a6f6d471b",
+                     "011641989d73e56f0f497f768535471b", 7999350999753991002,
+                     517393984693196390533858588431234738))
+            largest = "1.7.127.32767.2147483647.9223372036854775807"
+            assert ok(ai, action="path", addr="0.0.0.0.0.0") == \
+                f"17.09af.04653adf.{first6}.{first7}.{first8}\n"
+            for a in (largest, "-1.-1.-1.-1.-1.-1", "0x1.7.7f.7fff.7fffffff.7fffffffffffffff"):
+                assert ok(ai, action="path", addr=a) == \
+                    f"1d.0f65.07dcd629.{last6}.{last7}.{last8}\n", a
+            assert ok(ai, action="address", seq="0x" + last8) == largest + "\n"
+            assert ok(ai, action="address", seq="0x" + first7) == "0.0.0.0.0\n"
+            assert ok(ai, action="collapse", seq="0x" + last8) == \
+                f"0x{last7} 9223372036854775807\n"
+            # A rank of order 8 is up to 120 bits wide. A JSON integer is
+            # exact only under 2^64 - 1, so a larger rank is a string.
+            for seq, order, rank in ((first7, 7, 0), (last7, 7, (1 << 57) - 1),
+                                     (first8, 8, 0), (last8, 8, (1 << 120) - 1)):
+                assert ok(ai, action="rank", seq="0x" + seq) == f"{rank}\n"
+                assert ok(ai, action="unrank", order=order, rank=str(rank)).split()[0] == \
+                    "0x" + seq
+            assert ok(ai, action="unrank", order=8, rank=hex((1 << 120) - 1)) == \
+                f"0x{last8} {largest}\n"
+            assert ok(ai, action="unrank", order=8, rank=(1 << 64) - 1) == \
+                ok(ai, action="unrank", order=8, rank=str((1 << 64) - 1))
+            # askai parses the JSON of a request strictly: an integer over
+            # 2^64 - 1 is an error of the request, and never a cut number.
+            status, _, body = ai.rpc("tools/call", {"name": "debruijn", "arguments": {
+                "action": "unrank", "order": 8, "rank": 1 << 64}})
+            assert status == 400 and body["error"]["code"] == -32700, (status, body)
+            for seq, parent, mask, rank in wide:
+                order = 7 if len(seq) == 32 else 8
+                for m in (mask, str(mask), hex(mask), oct(mask).replace("o", ""), bin(mask)):
+                    assert ok(ai, action="expand", seq="0x" + parent, mask=m) == f"0x{seq}\n", m
+                assert ok(ai, action="collapse", seq="0x" + seq) == f"0x{parent} {mask}\n"
+                assert ok(ai, action="rank", seq="0x" + seq) == f"{rank}\n"
+                row = ok(ai, action="unrank", order=order, rank=str(rank))
+                assert row.startswith(f"0x{seq} ") and row.endswith(f".{mask}\n"), row
+                addr = row.split()[1]
+                assert ok(ai, action="path", addr=addr).rstrip().split(".")[-2:] == [parent, seq]
+                assert ok(ai, action="address", seq="0x" + seq) == addr + "\n"
+                if rank < (1 << 64) - 1:
+                    assert ok(ai, action="unrank", order=order, rank=rank) == row
+                # The three forms of the sequence, and each notation of seq.
+                value, bits = int(seq, 16), 1 << order
+                for action, more in (("collapse", {}), ("path", {}), ("address", {}),
+                                     ("windows", {}), ("cycles", {"rot": 77}), ("rank", {})):
+                    one = ok(ai, action=action, seq="0x" + seq, **more)
+                    for form in ({"addr": addr}, {"order": order, "rank": str(rank)},
+                                 {"seq": str(value)}, {"seq": bin(value)},
+                                 {"seq": oct(value).replace("o", "")},
+                                 {"seq": hex(value), "order": order}):
+                        assert one and ok(ai, action=action, **form, **more) == one, \
+                            (action, form)
+                # A negative number is its two's complement in 2^order bits:
+                # the rotation whose top bit is set, minus 2^(2^order).
+                top = (value << order | value >> (bits - order)) & ((1 << bits) - 1)
+                assert top >> (bits - 1) and \
+                    ok(ai, action="rank", seq=str(top - (1 << bits)), order=order) == \
+                    f"{rank}\n" and \
+                    ok(ai, action="windows", seq=str(top - (1 << bits)), order=order) == \
+                    windows(top, order)
+                # Without order, the order is computed from the bit width of
+                # seq: a rotation is 2^order - order to 2^order bits wide.
+                # windows and cycles read the rotation unchanged.
+                for r in (0, 1, 63, 64, 65, order, bits - order - 1, bits - 1):
+                    turned = (value << r | value >> (bits - r)) & ((1 << bits) - 1)
+                    assert ok(ai, action="rank", seq=hex(turned)) == f"{rank}\n", r
+                    assert ok(ai, action="windows", seq=hex(turned), order=order) == \
+                        windows(turned, order), r
+                    for rot in (0, 1, 64, bits - 1):
+                        got = ok(ai, action="cycles", seq=hex(turned), order=order, rot=rot)
+                        assert got == cycles(turned, order, rot) and \
+                            sorted(map(int, got.split())) == list(range(bits)), (r, rot)
+                    assert ok(ai, action="cycles", seq=hex(turned), order=order, rot="0x40") == \
+                        cycles(turned, order, 64)
+            # Numbers around 2^64, from where libgmp converts the digits, in
+            # each base: as the rank in a call and as the rank in the output.
+            for value in ((1 << 64) - 2, (1 << 64) - 1, 1 << 64, (1 << 64) + 1,
+                          (1 << 119) + 12345, 10 ** 30):
+                rows = {ok(ai, action="unrank", order=8, rank=text) for text in (
+                    str(value), hex(value), bin(value), oct(value).replace("o", ""),
+                    " " + hex(value).upper(), "0x" + "0" * 300 + f"{value:x}")}
+                assert len(rows) == 1, value
+                assert ok(ai, action="rank", seq=rows.pop().split()[0]) == f"{value}\n", value
+            # Pages of the orders 7 and 8. The second page is of several
+            # writes, and its rows are the rows of unrank.
+            rows7 = ok(ai, action="ordered", order=7, first=123456789012345, limit=2).split("\n")
+            assert [r.split()[0] for r in rows7[:2]] == \
+                ["0x0106285fde8d61c96d3e3ceaecca9137", "0x0106285fde8d61c96d3e3ceca9133757"]
+            start = 987654321098765432109876543210987654
+            page = ok(ai, action="ordered", order=8, first=str(start), limit=256)
+            rows8 = page.splitlines(keepends=True)
+            assert len(rows8) == 256 and len(page) > 20000 and \
+                [r.split()[0] for r in rows8[:3]] == [
+                    "0x00df1ca4cd4db982464ad8b5977542f4f79c431a051fb3ebfc83b4b089d1570f",
+                    "0x00df1ca4cd4db982464ad8b5977542f4f79c431a051fb3ebfc83b4b0f089d157",
+                    "0x00df1ca4cd4db982464ad8b5977542f4f79c431a051fb3ebfc83c2276961d157"] and \
+                [int(r.split()[0], 16) for r in rows8] == \
+                sorted(int(r.split()[0], 16) for r in rows8), rows8[:3]
+            for k in (0, 1, 100, 255):
+                assert ok(ai, action="unrank", order=8, rank=str(start + k)) == rows8[k], k
+            assert ok(ai, action="ordered", order=8, first=str(start), limit=256,
+                      offset=9000) == page[9000:]
+            assert ok(ai, action="ordered", order=8, first=str((1 << 120) - 1)) == \
+                f"0x{last8} {largest}\n"
+            assert ok(ai, action="ordered", order=8, first=str(1 << 120)) == ""
+            assert ok(ai, action="ordered", order=7, first=(1 << 57) - 1).split()[0] == \
+                "0x" + last7
+            assert ok(ai, action="ordered", order=7, first=1 << 57) == ""
+            # The children of a sequence of order 6 are 2^31, and those of
+            # order 7 are 2^63.
+            for seq, child, masks in ((last6, last7, (1 << 31) - 1), (last7, last8, (1 << 63) - 1)):
+                lines = ok(ai, action="children", seq="0x" + seq, first=masks - 2).split()
+                assert len(lines) == 3 and lines[2] == "0x" + child, lines
+                for k in range(3):
+                    assert ok(ai, action="expand", seq="0x" + seq, mask=masks - 2 + k) == \
+                        lines[k] + "\n"
+                assert ok(ai, action="children", seq="0x" + seq, first=str(masks), limit=5) == \
+                    f"0x{child}\n"
+                assert ok(ai, action="children", seq="0x" + seq, first=masks + 1) == ""
+            assert ok(ai, action="children", seq="0x" + first6, limit=2).split()[0] == \
+                "0x" + first7
+            assert len(ok(ai, action="children", seq="0x" + first7, limit=1000)) == 67000
+
             no_sequence = "0x1e is no sequence of order 3."
+            LAST8 = "00ff7e7d7c7b7a79787767574737271706d6c6a6968665646261605514941211"
 
             def twice(action):
                 return f"{action} takes one sequence: seq, or addr, or order and rank."
 
-            no_number = ("The seq argument must be a string of a 64-bit number without a "
-                         "+ sign: hexadecimal after 0x, binary after 0b, octal after 0, else "
-                         "decimal.")
+            no_number = ("The seq argument must be a string of a number without a + sign: "
+                         "hexadecimal after 0x, binary after 0b, octal after 0, else decimal.")
+            too_wide = "The seq argument must be a number of at most 256 bits."
+            too_low = ("A negative seq stands for its two's complement in the 2^order bits of "
+                       "the sequence, and this number is under -2^(2^order - 1).")
             negative = ("A negative seq needs the argument order: a sequence of order n is "
                         "2^n bits long.")
             for arguments, text in (
@@ -20423,32 +20569,33 @@ def check_debruijn(binary, up, debruijn):
                     ({"action": "windows", "seq": "0x1fffff"},
                      "0x001fffff is no sequence of order 5."),
                     ({"action": "windows", "seq": "0x1"},
-                     "0x1 is no sequence of any order from 2 to 6."),
+                     "0x1 is no sequence of any order from 2 to 8."),
                     ({"action": "rank", "seq": "0"},
-                     "0x0 is no sequence of any order from 2 to 6."),
+                     "0x0 is no sequence of any order from 2 to 8."),
                     ({"action": "children", "seq": "17"}, "0x11 is no sequence of order 3."),
                     ({"action": "windows", "seq": "-1"}, negative),
                     ({"action": "rank", "seq": str(signed6)}, negative),
                     ({"action": "windows", "seq": "-1", "order": 3},
                      "0xff is no sequence of order 3."),
-                    ({"action": "windows", "seq": "-129", "order": 3},
-                     "0xffffffffffffff7f is no sequence of order 3."),
+                    ({"action": "windows", "seq": "-128", "order": 3},
+                     "0x80 is no sequence of order 3."),
+                    ({"action": "windows", "seq": "-129", "order": 3}, too_low),
+                    ({"action": "windows", "seq": str(-(1 << 255) - 1), "order": 8}, too_low),
                     ({"action": "windows", "seq": "0xffffffffffffffff"},
                      "0xffffffffffffffff is no sequence of order 6."),
-                    ({"action": "expand", "seq": "0x0218a392cd3d5dbf", "mask": 0},
-                     "0x0218a392cd3d5dbf is a sequence of order 6, and expand takes the orders "
-                     "2 to 5."),
-                    ({"action": "children", "seq": "0x0218a392cd3d5dbf"},
-                     "0x0218a392cd3d5dbf is a sequence of order 6, and children takes the "
-                     "orders 2 to 5."),
-                    ({"action": "children", "order": 6, "rank": 0},
-                     "The order argument must be a whole number from 2 to 5 for children."),
-                    ({"action": "expand", "order": 6, "rank": 0, "mask": 0},
-                     "The order argument must be a whole number from 2 to 5 for expand."),
+                    ({"action": "expand", "seq": "0x" + LAST8, "mask": 0},
+                     f"0x{LAST8} is a sequence of order 8, and expand takes the orders 2 to 7."),
+                    ({"action": "children", "seq": "0x" + LAST8},
+                     f"0x{LAST8} is a sequence of order 8, and children takes the orders 2 "
+                     "to 7."),
+                    ({"action": "children", "order": 8, "rank": 0},
+                     "The order argument must be a whole number from 2 to 7 for children."),
+                    ({"action": "expand", "order": 8, "rank": 0, "mask": 0},
+                     "The order argument must be a whole number from 2 to 7 for expand."),
                     ({"action": "rank", "seq": "1"},
-                     "0x1 is no sequence of any order from 2 to 6."),
+                     "0x1 is no sequence of any order from 2 to 8."),
                     ({"action": "rank", "seq": "2"},
-                     "0x2 is no sequence of any order from 2 to 6."),
+                     "0x2 is no sequence of any order from 2 to 8."),
                     ({"action": "rank", "seq": "4"}, "0x4 is no sequence of order 2."),
                     ({"action": "children", "seq": "0x17", "first": -1},
                      "first must be a whole number from 0, and limit a whole number from "
@@ -20457,7 +20604,7 @@ def check_debruijn(binary, up, debruijn):
                      "first must be a whole number from 0, and limit a whole number from "
                      "1 to 32768."),
                     ({"action": "collapse", "seq": "0x9"},
-                     "0x9 is a sequence of order 2, and collapse takes the orders 3 to 6."),
+                     "0x9 is a sequence of order 2, and collapse takes the orders 3 to 8."),
                     ({"action": "expand", "seq": "0x17", "mask": 8},
                      "The mask argument must be a whole number from 0 to 7 for order 3."),
                     ({"action": "ordered"}, "ordered needs the argument order."),
@@ -20480,12 +20627,11 @@ def check_debruijn(binary, up, debruijn):
                     ({"action": "windows", "order": 3, "rank": 2},
                      "The rank argument must be a whole number from 0 to 1 for order 3."),
                     ({"action": "collapse", "order": 2, "rank": 0},
-                     "The order argument must be a whole number from 3 to 6 for collapse."),
-                    ({"action": "expand", "addr": "1.7.127.32767", "mask": 0},
-                     "0x03f79d71b4cb0a89 is a sequence of order 6, and expand takes the orders "
-                     "2 to 5."),
+                     "The order argument must be a whole number from 3 to 8 for collapse."),
+                    ({"action": "expand", "addr": "1.7.127.32767.-1.-1", "mask": 0},
+                     f"0x{LAST8} is a sequence of order 8, and expand takes the orders 2 to 7."),
                     ({"action": "path", "seq": "0x3"},
-                     "0x3 is a sequence of order 2, and path takes the orders 3 to 6."),
+                     "0x3 is a sequence of order 2, and path takes the orders 3 to 8."),
                     ({"action": "unrank", "seq": "0x17"}, "unrank takes no argument seq."),
                     ({"action": "cycles", "seq": "0x09af"}, "cycles needs the argument rot."),
                     ({"action": "cycles", "rot": 0}, "cycles needs the argument seq."),
@@ -20493,7 +20639,11 @@ def check_debruijn(binary, up, debruijn):
                      "The rot argument must be a whole number from 0 to 15 for order 4."),
                     ({"action": "cycles", "seq": "0x09af", "rot": -1},
                      "The rot argument must be a whole number from 0 to 15 for order 4."),
-                    ({"action": "cycles", "seq": "0x09af", "rot": "1"},
+                    ({"action": "cycles", "seq": "0x09af", "rot": "-1"},
+                     "The rot argument must be a whole number from 0 to 15 for order 4."),
+                    ({"action": "cycles", "seq": "0x09af", "rot": "0x10"},
+                     "The rot argument must be a whole number from 0 to 15 for order 4."),
+                    ({"action": "cycles", "seq": "0x09af", "rot": 1.5},
                      "The rot argument must be a whole number from 0 to 15 for order 4."),
                     ({"action": "cycles", "addr": "1.7.127.32767", "rot": 64},
                      "The rot argument must be a whole number from 0 to 63 for order 6."),
@@ -20528,17 +20678,25 @@ def check_debruijn(binary, up, debruijn):
                     ({"action": "path", "addr": "1", "seq": "0x17"}, twice("path")),
                     ({"action": "windows", "seq": "0x17", "order": 3, "first": 1},
                      "windows takes no argument first."),
-                    ({"action": "expand", "seq": "0x17", "order": 6, "mask": 0},
-                     "The order argument must be a whole number from 2 to 5 for expand."),
+                    ({"action": "expand", "seq": "0x17", "order": 8, "mask": 0},
+                     "The order argument must be a whole number from 2 to 7 for expand."),
+                    ({"action": "windows", "seq": "0x17", "order": 9},
+                     "The order argument must be a whole number from 2 to 8 for windows."),
                     ({"action": "collapse", "seq": "0x3", "order": 2},
-                     "The order argument must be a whole number from 3 to 6 for collapse."),
+                     "The order argument must be a whole number from 3 to 8 for collapse."),
                     ({"action": "address", "seq": "0x3", "order": 2},
-                     "The order argument must be a whole number from 3 to 6 for address."),
+                     "The order argument must be a whole number from 3 to 8 for address."),
                     ({"action": "expand", "seq": "0x17", "order": 3, "mask": 8},
                      "The mask argument must be a whole number from 0 to 7 for order 3."),
                     ({"action": "expand", "seq": "xyz", "order": 3, "mask": 0}, no_number),
                     ({"action": "expand", "seq": "0x" + "1" * 17, "order": 3, "mask": 0},
-                     no_number),
+                     "0x11111111111111111 is no sequence of order 3."),
+                    ({"action": "windows", "seq": "0x1" + "0" * 64}, too_wide),
+                    ({"action": "windows", "seq": str(1 << 256)}, too_wide),
+                    ({"action": "windows", "seq": "0b1" + "0" * 256}, too_wide),
+                    ({"action": "windows", "seq": "04" + "0" * 85}, too_wide),
+                    ({"action": "windows", "seq": "9" * 400}, too_wide),
+                    ({"action": "windows", "seq": "9" * 400 + "x"}, no_number),
                     ({"action": "children", "seq": "09af"}, no_number),
                     ({"action": "children", "seq": "0x17 "}, no_number),
                     ({"action": "children", "seq": "0x17\0"}, no_number),
@@ -20552,16 +20710,46 @@ def check_debruijn(binary, up, debruijn):
                      "first must be a whole number from 0, and limit a whole number from "
                      "1 to 32768."),
                     ({"action": "path", "addr": "1.8"},
-                     "The addr argument must be 1 to 4 masks with a dot between two, "
-                     "such as 1.7.127.32767. The masks are at most 1, 7, 127 and 32767, in "
-                     "this order."),
-                    ({"action": "path", "addr": "1.7.127.32767.0"}, None),
+                     "The addr argument must be 1 to 6 masks with a dot between two, "
+                     "such as 1.7.127.32767. The masks are at most 1, 7, 127, 32767, "
+                     "2147483647 and 9223372036854775807, in this order."),
+                    ({"action": "path", "addr": "1.7.127.32767.0.0.0"}, None),
+                    ({"action": "path", "addr": "1.7.127.32767.2147483648"}, None),
+                    ({"action": "path", "addr": "1.7.127.32767.0.9223372036854775808"}, None),
+                    ({"action": "path", "addr": "1.7.127.32767.0." + "9" * 80}, None),
                     ({"action": "path", "addr": "1..7"}, None),
                     ({"action": "path", "addr": "1."}, None),
                     ({"action": "path", "addr": "."}, None),
                     ({"action": "path", "addr": ""}, None),
                     ({"action": "path", "addr": "1.010"}, None),
                     ({"action": "path", "addr": "1.7 "}, None),
+                    ({"action": "expand", "seq": "0x" + last6, "mask": 1 << 31},
+                     "The mask argument must be a whole number from 0 to 2147483647 for order 6."),
+                    ({"action": "expand", "seq": "0x" + last7, "mask": str(1 << 63)},
+                     "The mask argument must be a whole number from 0 to 9223372036854775807 "
+                     "for order 7."),
+                    ({"action": "expand", "seq": "0x" + last7, "mask": 18446744073709551615},
+                     "The mask argument must be a whole number from 0 to 9223372036854775807 "
+                     "for order 7."),
+                    ({"action": "expand", "seq": "0x" + last7, "mask": "-1"},
+                     "The mask argument must be a whole number from 0 to 9223372036854775807 "
+                     "for order 7."),
+                    ({"action": "unrank", "order": 8, "rank": str(1 << 120)},
+                     "The rank argument must be a whole number from 0 to "
+                     "1329227995784915872903807060280344575 for order 8."),
+                    ({"action": "unrank", "order": 7, "rank": 1 << 57},
+                     "The rank argument must be a whole number from 0 to 144115188075855871 "
+                     "for order 7."),
+                    ({"action": "ordered", "order": 8, "first": "1e5"},
+                     "first must be a whole number from 0, and limit a whole number from "
+                     "1 to 256."),
+                    ({"action": "rank", "seq": "0x" + last8, "order": 7},
+                     f"0x{last8[2:]} is no sequence of order 7."),
+                    ({"action": "rank", "seq": "0x1" + "0" * 32},
+                     "0x" + "0" * 31 + "1" + "0" * 32 + " is no sequence of order 8."),
+                    ({"action": "rank", "seq": "0x" + last8[:-1] + "0"},
+                     f"0x{last8[:-1]}0 is no sequence of order 8."),
+                    ({"action": "windows", "seq": str(-int(last7, 16))}, negative),
                     ({"action": "path", "addr": "0x"}, None),
                     ({"action": "path", "addr": "+1.7"}, None),
                     ({"action": "path", "addr": "1.+7"}, None),
@@ -20578,7 +20766,8 @@ def check_debruijn(binary, up, debruijn):
                     (arguments, got)
     print("debruijn: mask tree, windows, numeric rank, unrank and ordered pages; a "
           "sequence as seq, as addr and as order and rank; the cycles of each sequence of "
-          "order 4 in each rotation, and of the other orders; the "
+          "order 4 in each rotation, and of the other orders; the orders 7 and 8, with "
+          "sequences of 256 bits and ranks of 120 bits as strings in each base; the "
           "order from the width, rotated sequences; numbers in each base, negative "
           "numbers, the base of an address from its first mask; refused sequences, orders, "
           "ranks, masks, addresses and arguments: PASS")
