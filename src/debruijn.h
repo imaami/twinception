@@ -26,7 +26,8 @@ debruijn_generator (uint64_t seed,
 /**
  * Generate from a prepared seed. This avoids reexamining a seed for every mask.
  * Return 0, the constructor's error, EFAULT for a null pointer, or EINVAL for
- * an out-of-range mask. Leave *word unchanged on failure; do not change errno.
+ * an out-of-range mask or a generator whose order is not 2..5. Leave *word
+ * unchanged on failure; do not change errno.
  */
 extern int
 debruijn_generate (uint64_t                        *word,

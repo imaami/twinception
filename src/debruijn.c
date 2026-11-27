@@ -37,6 +37,7 @@ struct tree {
 /**
  * The orders of the public functions: X(order). A public function is a
  * switch over a list, with a call of its inline body for each order. The
+ * body is the function of the same name with an underscore at the end. The
  * compiler makes a copy of the body for each call, in which the order, the
  * lengths and the masks are constants. A seed of a lift is of an order up
  * to 5, and a word with a parent is of an order from 3.
@@ -54,7 +55,7 @@ struct queue {
 
 /** Extract and remove the smallest label in a nonempty bitmap. */
 static force_inline unsigned
-take_first (uint64_t *set)
+debruijn_take_first (uint64_t *set)
 {
 	unsigned first = (unsigned)__builtin_ctzll(*set);
 	*set &= *set - 1U;
@@ -63,8 +64,8 @@ take_first (uint64_t *set)
 
 /** Validate a normalized word while recording each nonroot vertex's last exit. */
 static force_inline struct tree
-tree (uint64_t word,
-      unsigned order)
+debruijn_tree (uint64_t word,
+               unsigned order)
 {
 	unsigned length = 1U << order;
 	uint64_t mask = UINT64_MAX >> (64 - length);
@@ -99,8 +100,8 @@ tree (uint64_t word,
  *  exit. order is the order of the tree and of the word.
  */
 static force_inline uint64_t
-tree_word (struct tree const *src,
-           unsigned           order)
+debruijn_tree_word (struct tree const *src,
+                    unsigned           order)
 {
 	unsigned vertices = 1U << (order - 1);
 	unsigned visits[MAX_VERTICES] = {};
@@ -127,9 +128,9 @@ tree_word (struct tree const *src,
  *  vertex. order is the order of the seed.
  */
 static force_inline struct tree
-tree_lift (struct debruijn_generator const *src,
-           unsigned                         order,
-           unsigned                         choices)
+debruijn_tree_lift (struct debruijn_generator const *src,
+                    unsigned                         order,
+                    unsigned                         choices)
 {
 	unsigned vertices = 1U << (order - 1);
 	struct queue queues[MAX_VERTICES / 2] = {
@@ -161,7 +162,7 @@ tree_lift (struct debruijn_generator const *src,
 	struct tree ret = { .edge = { ROOT } };
 
 	for (unsigned i = 0; i < 2 * vertices; ++i) {
-		unsigned edge = take_first(&ready);
+		unsigned edge = debruijn_take_first(&ready);
 		struct queue *queue = &queues[edge & (vertices - 1)];
 		unsigned next = queue->edge[queue->used++];
 
@@ -183,7 +184,7 @@ debruijn_valid (uint64_t word,
                 unsigned order)
 {
 	switch (order) {
-	#define DEBRUIJN_ORDER_CASE(n) case n: return !tree(word, n).error;
+	#define DEBRUIJN_ORDER_CASE(n) case n: return !debruijn_tree(word, n).error;
 	DEBRUIJN_ORDER_LIST(DEBRUIJN_ORDER_CASE)
 	#undef DEBRUIJN_ORDER_CASE
 	}
@@ -192,8 +193,8 @@ debruijn_valid (uint64_t word,
 
 /** Test a bit of a bitmap and set it; return whether it was set before. */
 static force_inline bool
-seen (uint64_t *map,
-      unsigned  pos)
+debruijn_seen (uint64_t *map,
+               unsigned  pos)
 {
 	uint64_t bit = UINT64_C(1) << pos;
 	if (*map & bit)
@@ -208,12 +209,12 @@ seen (uint64_t *map,
  * window is in it already. num must be at least 1.
  */
 static force_inline uint64_t
-windows (uint64_t seq,
-         uint64_t map,
-         uint64_t window,
-         unsigned num)
+debruijn_windows (uint64_t seq,
+                  uint64_t map,
+                  uint64_t window,
+                  unsigned num)
 {
-	for (; !seen(&map, (unsigned)(seq & window)); seq >>= 1U) {
+	for (; !debruijn_seen(&map, (unsigned)(seq & window)); seq >>= 1U) {
 		if (!--num)
 			return map;
 	}
@@ -222,8 +223,8 @@ windows (uint64_t seq,
 
 /** debruijn_normalize() for a word that is not null and a valid order. */
 static force_inline int
-normalize (uint64_t *word,
-           unsigned  order)
+debruijn_normalize_ (uint64_t *word,
+                     unsigned  order)
 {
 	unsigned length = 1U << order;
 	uint64_t mask = UINT64_MAX >> (64 - length);
@@ -235,8 +236,8 @@ normalize (uint64_t *word,
 	 * then in a rotation the order - 1 that run over the end of the word. */
 	uint64_t window = (UINT64_C(1) << order) - 1U;
 	uint64_t over = ((seq << (order - 1U)) | (seq >> (length - order + 1U))) & mask;
-	uint64_t map = windows(seq, 0, window, length - order + 1U);
-	if (!map || !windows(over, map, window, order - 1U))
+	uint64_t map = debruijn_windows(seq, 0, window, length - order + 1U);
+	if (!map || !debruijn_windows(over, map, window, order - 1U))
 		return EINVAL;
 
 	/* Every value is in exactly one window, zero too, so exactly one rotation
@@ -254,7 +255,7 @@ debruijn_normalize (uint64_t *word,
 	if (!word)
 		return EFAULT;
 	switch (order) {
-	#define DEBRUIJN_ORDER_CASE(n) case n: return normalize(word, n);
+	#define DEBRUIJN_ORDER_CASE(n) case n: return debruijn_normalize_(word, n);
 	DEBRUIJN_ORDER_LIST(DEBRUIJN_ORDER_CASE)
 	#undef DEBRUIJN_ORDER_CASE
 	}
@@ -263,10 +264,10 @@ debruijn_normalize (uint64_t *word,
 
 /** debruijn_generator() for a seed of a valid order, 2..5. */
 static force_inline struct debruijn_generator
-generator (uint64_t seed,
-           unsigned order)
+debruijn_generator_ (uint64_t seed,
+                     unsigned order)
 {
-	struct tree input = tree(seed, order);
+	struct tree input = debruijn_tree(seed, order);
 	if (input.error)
 		return (struct debruijn_generator){ .error = input.error };
 
@@ -282,7 +283,7 @@ debruijn_generator (uint64_t seed,
                     unsigned order)
 {
 	switch (order) {
-	#define DEBRUIJN_ORDER_CASE(n) case n: return generator(seed, n);
+	#define DEBRUIJN_ORDER_CASE(n) case n: return debruijn_generator_(seed, n);
 	DEBRUIJN_SEED_ORDER_LIST(DEBRUIJN_ORDER_CASE)
 	#undef DEBRUIJN_ORDER_CASE
 	}
@@ -293,20 +294,20 @@ debruijn_generator (uint64_t seed,
  *  order of the seed, 2..5.
  */
 static force_inline int
-generate (uint64_t                        *word,
-          struct debruijn_generator const *src,
-          unsigned                         order,
-          unsigned                         choices)
+debruijn_generate_ (uint64_t                        *word,
+                    struct debruijn_generator const *src,
+                    unsigned                         order,
+                    unsigned                         choices)
 {
 	unsigned choice_bits = (1U << (order - 1)) - 1;
 	if (choices >> choice_bits)
 		return EINVAL;
 
-	struct tree output = tree_lift(src, order, choices);
+	struct tree output = debruijn_tree_lift(src, order, choices);
 	if (output.error)
 		return output.error;
 
-	*word = tree_word(&output, order + 1);
+	*word = debruijn_tree_word(&output, order + 1);
 	return 0;
 }
 
@@ -320,7 +321,7 @@ debruijn_generate (uint64_t                         *word,
 	if (src->error)
 		return src->error;
 	switch (src->order) {
-	#define DEBRUIJN_ORDER_CASE(n) case n: return generate(word, src, n, choices);
+	#define DEBRUIJN_ORDER_CASE(n) case n: return debruijn_generate_(word, src, n, choices);
 	DEBRUIJN_SEED_ORDER_LIST(DEBRUIJN_ORDER_CASE)
 	#undef DEBRUIJN_ORDER_CASE
 	}
@@ -329,13 +330,13 @@ debruijn_generate (uint64_t                         *word,
 
 /** debruijn_expand() for a word that is not null and a valid order, 2..5. */
 static force_inline int
-expand (uint64_t *word,
-        uint64_t  seed,
-        unsigned  order,
-        unsigned  choices)
+debruijn_expand_ (uint64_t *word,
+                  uint64_t  seed,
+                  unsigned  order,
+                  unsigned  choices)
 {
-	struct debruijn_generator src = generator(seed, order);
-	return src.error ? src.error : generate(word, &src, order, choices);
+	struct debruijn_generator src = debruijn_generator_(seed, order);
+	return src.error ? src.error : debruijn_generate_(word, &src, order, choices);
 }
 
 int
@@ -347,7 +348,7 @@ debruijn_expand (uint64_t *word,
 	if (!word)
 		return EFAULT;
 	switch (order) {
-	#define DEBRUIJN_ORDER_CASE(n) case n: return expand(word, seed, n, choices);
+	#define DEBRUIJN_ORDER_CASE(n) case n: return debruijn_expand_(word, seed, n, choices);
 	DEBRUIJN_SEED_ORDER_LIST(DEBRUIJN_ORDER_CASE)
 	#undef DEBRUIJN_ORDER_CASE
 	}
@@ -358,12 +359,12 @@ debruijn_expand (uint64_t *word,
  *  3..6.
  */
 static force_inline int
-collapse (uint64_t *seed,
-          unsigned *choices,
-          uint64_t  word,
-          unsigned  order)
+debruijn_collapse_ (uint64_t *seed,
+                    unsigned *choices,
+                    uint64_t  word,
+                    unsigned  order)
 {
-	struct tree input = tree(word, order);
+	struct tree input = debruijn_tree(word, order);
 	if (input.error)
 		return input.error;
 
@@ -384,7 +385,7 @@ collapse (uint64_t *seed,
 
 	/* Reverse the lift: prune the smallest leaf and rebuild the popped queues. */
 	for (unsigned i = 0; i < vertices; ++i) {
-		unsigned leaf = take_first(&leaves);
+		unsigned leaf = debruijn_take_first(&leaves);
 		unsigned parent = ROOT;
 
 		if (leaf) {
@@ -401,12 +402,12 @@ collapse (uint64_t *seed,
 	unsigned recovered = 0;
 
 	for (unsigned vertex = 1; vertex < lower_vertices; ++vertex) {
-		/* The bit is set if the first edge ends in 0 (tree_lift()). */
+		/* The bit is set if the first edge ends in 0 (debruijn_tree_lift()). */
 		recovered |= (~queues[vertex].edge[0] & 1U) << (vertex - 1);
 		output.edge[vertex] = queues[vertex].edge[1];
 	}
 
-	*seed = tree_word(&output, order - 1);
+	*seed = debruijn_tree_word(&output, order - 1);
 	*choices = recovered;
 	return 0;
 }
@@ -420,7 +421,7 @@ debruijn_collapse (uint64_t *seed,
 	if (!seed || !choices)
 		return EFAULT;
 	switch (order) {
-	#define DEBRUIJN_ORDER_CASE(n) case n: return collapse(seed, choices, word, n);
+	#define DEBRUIJN_ORDER_CASE(n) case n: return debruijn_collapse_(seed, choices, word, n);
 	DEBRUIJN_CHILD_ORDER_LIST(DEBRUIJN_ORDER_CASE)
 	#undef DEBRUIJN_ORDER_CASE
 	}
