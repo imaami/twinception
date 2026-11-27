@@ -53,10 +53,11 @@
  * after 0, else decimal. seq and each mask of addr are such numbers, and
  * rank, mask, rot and first are JSON integers or such numbers. A prefix on
  * the leftmost mask of an address is the base of all its masks, so
- * 0b1.110.1010101.111110000011111 is binary. A negative number stands for
- * its two's complement in the bits of the sequence or mask: 2^n bits for a
- * sequence of order n, which then needs the argument order, and
- * 2^(n-1) - 1 bits for a mask that expands a sequence of order n. The
+ * 0b1.110.1010101.111110000011111 is binary. A negative seq, or a negative
+ * mask of addr, stands for its two's complement in the bits of the
+ * sequence or mask: 2^n bits for a sequence of order n, which then needs
+ * the argument order, and 2^(n-1) - 1 bits for a mask that expands a
+ * sequence of order n. rank, mask, rot and first are not negative. The
  * sequences in the output are hexadecimal. libgmp converts the digits of a
  * number to limbs and the limbs of a rank to decimal digits, with its
  * functions for limbs, which allocate no memory for numbers of this size.
@@ -136,7 +137,8 @@ static struct cstr_view const debruijn_plugin_arg_names[] = {
  *   their largest order is 7. collapse, path and address compute the
  *   parent of the sequence, so their smallest order is 3.
  * - cap: the largest limit of an action that takes first and limit, and 0
- *   for an action that takes neither.
+ *   for an action that takes neither. The largest limit of children is
+ *   smaller from order 6 (debruijn_plugin_cap()).
  * A call of every action can contain offset.
  */
 #define DEBRUIJN_PLUGIN_ACTION_LIST(X)                             \
@@ -187,6 +189,27 @@ static struct debruijn_plugin_rule const debruijn_plugin_rules[] = {
 	DEBRUIJN_PLUGIN_ACTION_LIST(DEBRUIJN_PLUGIN_ACTION_RULE)
 };
 #undef DEBRUIJN_PLUGIN_ACTION_RULE
+
+/* Returns the largest limit of a call of the action @p action for a
+ * sequence of the order @p order, which is an order of the action: the cap
+ * of the rule of the action, and less for the children of a sequence of
+ * order 6 or 7. A call runs on the thread of a client loop, where the
+ * watchdog of askai reports a turn of more than 20 ms. 32768 children of a
+ * sequence of order 5 take 11 ms. A child of a sequence of order 6 or 7 is
+ * two or four limbs, and 32768 of them take 28 or 69 ms. 8192 and 4096 of
+ * them take 7 and 9 ms.
+ */
+static unsigned
+debruijn_plugin_cap (size_t   action,
+                     unsigned order)
+{
+	static uint16_t const wide[] = { 8192, 4096 };
+	static_assert(DEBRUIJN_MAX_ORDER + array_size(wide) == DEBRUIJN_WIDE_MAX_ORDER,
+	              "a cap for each order of a sequence with wide children");
+	if (action == DEBRUIJN_PLUGIN_CHILDREN && order >= DEBRUIJN_MAX_ORDER)
+		return wide[order - DEBRUIJN_MAX_ORDER];
+	return debruijn_plugin_rules[action].cap;
+}
 
 /* The output of a call. The lines gather in text and go to the call in
  * pieces. e is the first error of mcp_slot_write().
@@ -402,10 +425,10 @@ debruijn_plugin_base (struct cstr_view text)
  * complement in @p bits bits, from 1 to 256.
  *
  * Stores 0 in @p *e, or EINVAL if @p text is not one number from its start
- * to its end, ERANGE for a number of more than 256 bits, EDOM for a
- * negative number if @p bits is 0, or EOVERFLOW for a negative number
- * under -2^(bits-1), whose two's complement does not fit in @p bits bits.
- * Returns 0 with an error.
+ * to its end, EDOM for a negative number of any size if @p bits is 0,
+ * ERANGE for another number of more than 256 bits, or EOVERFLOW for a
+ * negative number under -2^(bits-1), whose two's complement does not fit
+ * in @p bits bits. Returns 0 with an error.
  */
 static struct debruijn_wide
 debruijn_plugin_number (struct cstr_view  text,
@@ -455,7 +478,7 @@ debruijn_plugin_number (struct cstr_view  text,
 			digits[n++] = (unsigned char)digit;
 		wide = wide || ckd_mul(&low, low, base) || ckd_add(&low, low, digit);
 	}
-	*e = ERANGE;
+	*e = negative && !bits ? EDOM : ERANGE;
 	if (over)
 		return ret;
 	ret.limb[0] = low;
@@ -930,9 +953,11 @@ debruijn_plugin_uint (struct json_object const *val,
 
 /* Stores the whole number @p val in @p *n and returns 0: a JSON integer
  * from 0, or a string of a number as debruijn_plugin_number() reads it,
- * without a minus sign. Otherwise returns EINVAL. askai parses the JSON of
- * a call strictly, so a JSON integer over 2^64 - 1 is an error of the
- * request and no integer here is cut.
+ * without a minus sign. A number of more than 256 bits is stored as
+ * 2^256 - 1, which is over the largest value of every argument and past
+ * the last row of every list. Otherwise returns EINVAL. askai parses the
+ * JSON of a call strictly, so a JSON integer over 2^64 - 1 is an error of
+ * the request and no integer here is cut.
  */
 static int
 debruijn_plugin_whole (struct json_object   *val,
@@ -943,7 +968,10 @@ debruijn_plugin_whole (struct json_object   *val,
 		return jb_uint_checked(val, UINT64_MAX, &n->limb[0]);
 	int e;
 	*n = debruijn_plugin_number(jb_view(val), 0, 0, &e);
-	return e ? EINVAL : 0;
+	if (e != ERANGE)
+		return e ? EINVAL : 0;
+	*n = debruijn_plugin_ones(DEBRUIJN_PLUGIN_BITS);
+	return 0;
 }
 
 /* Reads the argument @p arg of the arguments @p of of a call into @p *n and
@@ -1095,7 +1123,8 @@ debruijn_plugin_definition (void const *service)
 		"\"first\":{\"type\":[\"integer\",\"string\"],\"default\":0,\"description\":"
 		"\"For children: the first mask. For ordered: the first rank (empty past end).\"},"
 		"\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":32768,\"default\":64,"
-		"\"description\":\"Maximum rows: up to 32768 for children or 256 for ordered.\"},"
+		"\"description\":\"Maximum rows: up to 256 for ordered. For children up to "
+		"32768 for the orders 2 to 5, 8192 for order 6 and 4096 for order 7.\"},"
 		"\"offset\":{\"type\":\"integer\",\"minimum\":0,\"description\":\""
 		TOOL_OFFSET_ABOUT "\"}},"
 		"\"required\":[\"action\"],\"additionalProperties\":false}"));
@@ -1237,11 +1266,12 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 	}
 	/* first can be any whole number: a first past the last row is no
 	 * error. */
+	unsigned const cap = debruijn_plugin_cap(action, order);
 	if (((seen & A(FIRST)) && debruijn_plugin_whole(of[DEBRUIJN_PLUGIN_ARG_FIRST], &first)) ||
-	    ((seen & A(LIMIT)) && (debruijn_plugin_uint(of[DEBRUIJN_PLUGIN_ARG_LIMIT], rule->cap,
+	    ((seen & A(LIMIT)) && (debruijn_plugin_uint(of[DEBRUIJN_PLUGIN_ARG_LIMIT], cap,
 	                                                &limit) || !limit))) {
 		mcp_slot_tellf(slot, TOOL_FAILED, "first must be a whole number from 0, and limit a "
-		               "whole number from 1 to %u.", rule->cap);
+		               "whole number from 1 to %u.", cap);
 		return;
 	}
 	if (mcp_slot_offset(slot, args))
@@ -1277,7 +1307,14 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 		debruijn_plugin_cycles(&out, &seq, order, (unsigned)number.limb[0]);
 		break;
 	case DEBRUIJN_PLUGIN_RANK:
-		debruijn_plugin_rank(&out, &normal, order);
+		/* The rank of a sequence that the call contains as a rank is
+		 * that argument, which no later argument replaced in number. */
+		if (needs & A(RANK)) {
+			debruijn_plugin_line(&out, "%s\n", debruijn_plugin_decimal(&number).text);
+			debruijn_plugin_end(&out);
+		} else {
+			debruijn_plugin_rank(&out, &normal, order);
+		}
 		break;
 	case DEBRUIJN_PLUGIN_UNRANK:
 		out.e = debruijn_plugin_row(&normal, order, &out);

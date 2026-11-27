@@ -2274,11 +2274,13 @@ one. A client that reads JSON numbers as doubles changes an integer from
 number that is no JSON integer of 64 bits, such as `0x7fff` or a rank of 30
 digits, as a string.
 
-A negative number stands for the unsigned number with the same bits in the
-width of the sequence or mask: 2^n bits for a sequence of order n, and
-2^(n-1) - 1 bits for a mask that expands a sequence of order n. A negative
-`seq` therefore needs `order`, so that its sign bit is known. `-1` is the
-largest mask, and `-1.-1.-1.-1` is `1.7.127.32767`.
+A negative `seq`, or a negative mask of `addr`, stands for the unsigned
+number with the same bits in the width of the sequence or mask: 2^n bits
+for a sequence of order n, and 2^(n-1) - 1 bits for a mask that expands a
+sequence of order n. A negative `seq` therefore needs `order`, so that its
+sign bit is known. In an address, `-1` is the largest mask, and
+`-1.-1.-1.-1` is `1.7.127.32767`. `rank`, `mask`, `rot` and `first` cannot
+be negative.
 
 `seq` can be a rotation of a sequence, such as `0x9af0` for `0x09af`. An
 action rotates `seq` to start with its n zero bits before it reads it, and
@@ -2311,7 +2313,10 @@ returns `1234567`. The orders 2 through 8 contain 1, 2, 16, 2048, 67108864,
 order; `ordered` stops at the end and returns no rows for `first` past the
 last rank, and `children` none for `first` past the last mask. It seeks by
 counting whole prefix blocks, not by visiting earlier sequences. `children`
-still enumerates a single parent's children in *mask* order.
+still enumerates a single parent's children in *mask* order. Its `limit` is
+at most 32768 for a sequence of the orders 2 to 5, 8192 for order 6 and 4096
+for order 7: a child of 128 or 256 bits takes longer to compute, and a call
+of that size takes about 10 milliseconds.
 
 The count of a block of sequences is a determinant. For the orders 2 to 6
 the tool computes each determinant anew. For the orders 7 and 8 it stores

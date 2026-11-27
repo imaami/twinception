@@ -20208,9 +20208,13 @@ def check_debruijn(binary, up, debruijn):
             # first can be any whole number, and a first past the last row
             # is no error.
             for first in (32768, 4294967295, 4294967296, 18446744073709551615,
-                          "18446744073709551616", "0x1" + "0" * 40, str(1 << 255)):
+                          "18446744073709551616", "0x1" + "0" * 40, str(1 << 255),
+                          str((1 << 256) - 1), str(1 << 256), "0x1" + "0" * 64,
+                          "0b1" + "0" * 256, "9" * 400):
                 assert ok(ai, action="children", seq="0x04653adf", first=first) == "", first
                 assert ok(ai, action="ordered", order=5, first=first) == "", first
+            assert ok(ai, action="ordered", order=5, first="-0", limit=1) == \
+                ok(ai, action="unrank", order=5, rank="-0") == "0x04653adf 0.0.0\n"
             # An output of several writes: 1000 children are 19000 bytes, and
             # the plugin writes about 4000 bytes at a time. Each line is the
             # output of expand for the mask of the line.
@@ -20542,6 +20546,22 @@ def check_debruijn(binary, up, debruijn):
             assert ok(ai, action="children", seq="0x" + first6, limit=2).split()[0] == \
                 "0x" + first7
             assert len(ok(ai, action="children", seq="0x" + first7, limit=1000)) == 67000
+            # A call lists at most 8192 children of a sequence of order 6
+            # and 4096 of a sequence of order 7. A line is 0x, the digits
+            # of a child and a newline.
+            for seq, cap, line in ((first6, 8192, 35), (first7, 4096, 67)):
+                page = ok(ai, action="children", seq="0x" + seq, first=5, limit=cap)
+                assert len(page) == cap * line and len(set(page.split())) == cap, len(page)
+                assert refused(ai, action="children", seq="0x" + seq, limit=cap + 1) == \
+                    "first must be a whole number from 0, and limit a whole number from " \
+                    f"1 to {cap}."
+                for first in (str(1 << 256), "9" * 400):
+                    assert ok(ai, action="children", seq="0x" + seq, first=first) == ""
+                    assert ok(ai, action="ordered", order=8, first=first) == ""
+            assert len(ok(ai, action="children", seq="0x04653adf", limit=32768)) == 32768 * 19
+            # The rank of a sequence that the call contains as a rank.
+            for order, value in ((7, (1 << 57) - 1), (8, (1 << 120) - 1), (8, 10 ** 30)):
+                assert ok(ai, action="rank", order=order, rank=str(value)) == f"{value}\n"
 
             no_sequence = "0x1e is no sequence of order 3."
             LAST8 = "00ff7e7d7c7b7a79787767574737271706d6c6a6968665646261605514941211"
@@ -20552,6 +20572,7 @@ def check_debruijn(binary, up, debruijn):
             no_number = ("The seq argument must be a string of a number without a + sign: "
                          "hexadecimal after 0x, binary after 0b, octal after 0, else decimal.")
             too_wide = "The seq argument must be a number of at most 256 bits."
+            all_ones = "0x" + "f" * 64 + " is no sequence of order 8."
             too_low = ("A negative seq stands for its two's complement in the 2^order bits of "
                        "the sequence, and this number is under -2^(2^order - 1).")
             negative = ("A negative seq needs the argument order: a sequence of order n is "
@@ -20697,6 +20718,36 @@ def check_debruijn(binary, up, debruijn):
                     ({"action": "windows", "seq": "04" + "0" * 85}, too_wide),
                     ({"action": "windows", "seq": "9" * 400}, too_wide),
                     ({"action": "windows", "seq": "9" * 400 + "x"}, no_number),
+                    # The most digits of a number of 256 bits in each base,
+                    # and one digit more.
+                    ({"action": "windows", "seq": str((1 << 256) - 1)}, all_ones),
+                    ({"action": "windows", "seq": "01" + "7" * 85}, all_ones),
+                    ({"action": "windows", "seq": "0x" + "f" * 64}, all_ones),
+                    ({"action": "windows", "seq": "0b" + "1" * 256}, all_ones),
+                    ({"action": "windows", "seq": "0" * 9 + "1" + "7" * 85}, all_ones),
+                    ({"action": "windows", "seq": "1" + "0" * 78}, too_wide),
+                    ({"action": "windows", "seq": "02" + "0" * 85}, too_wide),
+                    ({"action": "windows", "seq": "01" + "0" * 86}, too_wide),
+                    ({"action": "windows", "seq": "0b1" + "1" * 256}, too_wide),
+                    ({"action": "windows", "seq": "-" + "9" * 400}, negative),
+                    ({"action": "windows", "seq": "-" + "9" * 400, "order": 8}, too_wide),
+                    ({"action": "rank", "seq": "0x1000000000000000009af", "order": 4},
+                     "0x1000000000000000009af is no sequence of order 4."),
+                    ({"action": "children", "seq": "0x04653adf", "limit": 32769},
+                     "first must be a whole number from 0, and limit a whole number from "
+                     "1 to 32768."),
+                    ({"action": "ordered", "order": 5, "first": "-1"},
+                     "first must be a whole number from 0, and limit a whole number from "
+                     "1 to 256."),
+                    ({"action": "ordered", "order": 5, "first": "-" + "9" * 400},
+                     "first must be a whole number from 0, and limit a whole number from "
+                     "1 to 256."),
+                    ({"action": "unrank", "order": 5, "rank": "-1"},
+                     "The rank argument must be a whole number from 0 to 2047 for order 5."),
+                    ({"action": "unrank", "order": 5, "rank": "9" * 400},
+                     "The rank argument must be a whole number from 0 to 2047 for order 5."),
+                    ({"action": "cycles", "seq": "0x09af", "rot": "-" + "9" * 400},
+                     "The rot argument must be a whole number from 0 to 15 for order 4."),
                     ({"action": "children", "seq": "09af"}, no_number),
                     ({"action": "children", "seq": "0x17 "}, no_number),
                     ({"action": "children", "seq": "0x17\0"}, no_number),
@@ -20717,6 +20768,12 @@ def check_debruijn(binary, up, debruijn):
                     ({"action": "path", "addr": "1.7.127.32767.2147483648"}, None),
                     ({"action": "path", "addr": "1.7.127.32767.0.9223372036854775808"}, None),
                     ({"action": "path", "addr": "1.7.127.32767.0." + "9" * 80}, None),
+                    # A mask of more than 32 or 64 bits is not cut to its
+                    # low bits.
+                    ({"action": "path", "addr": "4294967297"}, None),
+                    ({"action": "path", "addr": "1.4294967303"}, None),
+                    ({"action": "path", "addr": "1.18446744073709551623"}, None),
+                    ({"action": "path", "addr": "1.7.127.32767.0.18446744073709551616"}, None),
                     ({"action": "path", "addr": "1..7"}, None),
                     ({"action": "path", "addr": "1."}, None),
                     ({"action": "path", "addr": "."}, None),
