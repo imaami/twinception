@@ -106,7 +106,7 @@ debruijn_wide_mod_inverse (struct debruijn_wide_mod a)
  */
 struct debruijn_wide_counter {
 	struct debruijn_wide_mod det;
-	size_t                   size;
+	uint64_t                 size;
 	struct debruijn_wide_mod inverse[];
 };
 
@@ -204,11 +204,9 @@ debruijn_wide_counter_ratio (struct debruijn_wide_counter *counter,
 	/* The exit leads to u. size is the vertices minus one, a mask. */
 	unsigned const u = (2U * v + b) & (unsigned)counter->size;
 	struct debruijn_wide_mod const one = { 1, 0 };
-	/* A loop is the last exit of no vertex, and is not in the matrix. */
-	if (u == v)
-		return one;
 	/* Without the exit, the row of v is smaller by 1 in the column of v
-	 * and larger by 1 in the column of u. */
+	 * and larger by 1 in the column of u. For a loop, u is v: the matrix
+	 * is the same without it, and the ratio is 1. */
 	struct debruijn_wide_mod ratio =
 		debruijn_wide_mod_sub(one, *debruijn_wide_counter_at(counter, v, v));
 	if (u)
@@ -237,8 +235,9 @@ debruijn_wide_counter_remove (struct debruijn_wide_counter *counter,
                               unsigned                      v,
                               unsigned                      b)
 {
-	size_t const size = counter->size;
+	size_t const size = (size_t)counter->size;
 	unsigned const u = (2U * v + b) & (unsigned)size;
+	/* A loop is not in the matrix. */
 	if (u == v)
 		return;
 	struct debruijn_wide_mod const ratio = debruijn_wide_counter_ratio(counter, v, b);
@@ -344,13 +343,13 @@ debruijn_wide_rank (struct debruijn_wide       *rank,
 
 /* debruijn_feasible() of debruijn_order.c: after the last exit of @p v is
  * the exit to @p u, it is enough that allowed exits lead from u to zero
- * without v.
+ * without v. @p mask is the vertices minus one.
  */
 static bool
-debruijn_wide_feasible (unsigned                          mask,
-                        struct debruijn_wide_exits const *exits,
-                        unsigned                          v,
-                        unsigned                          u)
+debruijn_wide_exits_feasible (struct debruijn_wide_exits const *exits,
+                              unsigned                          mask,
+                              unsigned                          v,
+                              unsigned                          u)
 {
 	uint64_t seen[2] = {};
 	uint64_t todo[2] = {};
@@ -390,17 +389,20 @@ struct debruijn_wide_page {
  * of the first @p i steps of the tour, which is at the vertex @p v.
  */
 static int
-debruijn_wide_visit (struct debruijn_wide_page  *p,
-                     struct debruijn_wide_exits  exits,
-                     struct debruijn_wide        seq,
-                     unsigned                    v,
-                     unsigned                    i)
+debruijn_wide_page_visit (struct debruijn_wide_page  *p,
+                          struct debruijn_wide_exits  exits,
+                          struct debruijn_wide        seq,
+                          unsigned                    v,
+                          unsigned                    i)
 {
 	unsigned const length = 1U << p->order;
 	unsigned const mask = (length >> 1U) - 1U;
 	for (; i < length; ++i) {
 		if (debruijn_wide_exits_open(&exits, v)) {
 			for (unsigned b = 0; b < 2 && p->left; ++b) {
+				/* The tour leaves v with b now. The last exit of v
+				 * is then the other bit, to the vertex last. */
+				unsigned const last = (v << 1U | (1U - b)) & mask;
 				struct debruijn_wide_exits child = exits;
 				debruijn_wide_clear(child.allow[b], v);
 				if (!b && p->skip) {
@@ -410,8 +412,7 @@ debruijn_wide_visit (struct debruijn_wide_page  *p,
 						p->skip -= z;
 						continue;
 					}
-				} else if (!debruijn_wide_feasible(mask, &child, v,
-				                                   (v << 1U | (1U - b)) & mask)) {
+				} else if (!debruijn_wide_exits_feasible(&child, mask, v, last)) {
 					continue;
 				}
 				/* A tour that goes on with a skip counts again. */
@@ -419,8 +420,8 @@ debruijn_wide_visit (struct debruijn_wide_page  *p,
 					debruijn_wide_counter_remove(p->counter, v, b);
 				struct debruijn_wide next = seq;
 				debruijn_wide_step(&next, p->order, i, b);
-				int const e = debruijn_wide_visit(p, child, next,
-				                                  (v << 1U | b) & mask, i + 1U);
+				unsigned const to = (v << 1U | b) & mask;
+				int const e = debruijn_wide_page_visit(p, child, next, to, i + 1U);
 				if (e)
 					return e;
 			}
@@ -466,7 +467,7 @@ debruijn_wide_ordered (unsigned                    order,
 	struct debruijn_wide_exits const all = {
 		{ { UINT64_MAX, UINT64_MAX }, { UINT64_MAX, UINT64_MAX } }
 	};
-	e = debruijn_wide_visit(&p, all, (struct debruijn_wide){}, 0, 0);
+	e = debruijn_wide_page_visit(&p, all, (struct debruijn_wide){}, 0, 0);
 	debruijn_wide_counter_destroy(&p.counter);
 	return e;
 }
