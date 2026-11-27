@@ -176,7 +176,7 @@ test_narrow (uint64_t word,
 
 struct narrow_page {
 	uint64_t words[64];
-	unsigned n;
+	size_t   n;
 };
 
 static int
@@ -192,7 +192,7 @@ narrow_emit (uint64_t  word,
 
 struct wide_page {
 	struct debruijn_wide seqs[64];
-	unsigned             n;
+	size_t               n;
 };
 
 static int
