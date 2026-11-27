@@ -2219,7 +2219,7 @@ can differ. The `keep` of a request for a short link is a day.
 ### The debruijn plugin
 
 `debruijn.so` adds one tool, `debruijn`, that explores the binary de Bruijn
-words of the orders 2 to 6. `make debruijn.so` builds it from
+sequences of the orders 2 to 6. `make debruijn.so` builds it from
 `src/debruijn_plugin.c`, the mask construction in `src/debruijn.c` and the
 numeric ordering in `src/debruijn_order.c`. The plugin has no options:
 
@@ -2227,22 +2227,23 @@ numeric ordering in `src/debruijn_order.c`. The plugin has no options:
 { "path": "/usr/libexec/askai/debruijn.so" }
 ```
 
-A word of order n has 2^n bits, and every value of n bits is in the word
-once, also across the end of the word to its start. The words of the tool
-start with n zero bits, and the output shows them as hexadecimal digits, such
-as `0x09af` for order 4. The word `0x3` of order 2 is the root of a tree. A
-word of order n from 2 to 5 has one child of order n+1 for each mask: 2, 8,
-128 and 32768 children for the orders 2, 3, 4 and 5. A word of order 3 to 6
-is the child of exactly one word. The address of a word is the masks on the
-way from the root, such as `1.7.127.32767`. The masks 0 lead to the
-numerically first word of each order and the largest masks to the last: the
-words of the address `0.0.0.0` are `17.09af.04653adf.0218a392cd3d5dbf`, and
-those of `1.7.127.32767` are `1d.0f65.07dcd629.03f79d71b4cb0a89`.
+A sequence of order n has 2^n bits, and every value of n bits is in the
+sequence once, also across the end of the sequence to its start. The
+sequences of the tool start with n zero bits, and the output shows them as
+hexadecimal digits, such as `0x09af` for order 4. The sequence `0x3` of
+order 2 is the root of a tree. A sequence of order n from 2 to 5 has one
+child of order n+1 for each mask: 2, 8, 128 and 32768 children for the
+orders 2, 3, 4 and 5. A sequence of order 3 to 6 is the child of exactly one
+sequence. The address of a sequence is the masks on the way from the root,
+such as `1.7.127.32767`. The masks 0 lead to the numerically first sequence
+of each order and the largest masks to the last: the sequences of the
+address `0.0.0.0` are `17.09af.04653adf.0218a392cd3d5dbf`, and those of
+`1.7.127.32767` are `1d.0f65.07dcd629.03f79d71b4cb0a89`.
 
-A word, and each mask of an address, is a number as `strtoll()` reads it
+A sequence, and each mask of an address, is a number as `strtoll()` reads it
 with the base 0, but without a `+` sign: hexadecimal after `0x`, binary
 after `0b`, octal after `0`, and else decimal. So `0x17`, `0b10111`, `027`
-and `23` are the same word, while `17` is `0x11`, and `09af` is not a
+and `23` are the same sequence, while `17` is `0x11`, and `09af` is not a
 number. A prefix on the leftmost mask of an address is the base of all its
 masks: `0b1.110.1010101.111110000011111` is `1.6.85.31775`, and
 `0x1.7.7f.7fff` is `1.7.127.32767`. A lone `0` has no prefix, so
@@ -2250,45 +2251,45 @@ masks: `0b1.110.1010101.111110000011111` is `1.6.85.31775`, and
 mask takes the base from its own prefix.
 
 A negative number stands for the unsigned number with the same bits in the
-width of the word or mask: 2^n bits for a word of order n, and 2^(n-1) - 1
-bits for a mask that expands a word of order n. A negative word therefore
-needs `order`, so that its sign bit is known. `-1` is the largest mask, and
-`-1.-1.-1.-1` is `1.7.127.32767`.
+width of the sequence or mask: 2^n bits for a sequence of order n, and
+2^(n-1) - 1 bits for a mask that expands a sequence of order n. A negative
+sequence therefore needs `order`, so that its sign bit is known. `-1` is the
+largest mask, and `-1.-1.-1.-1` is `1.7.127.32767`.
 
-An action also takes a rotation of a word, such as `0x9af0` for `0x09af`,
-and rotates it to start with its n zero bits before it reads it; `windows`
-reads the rotation as given. An action that takes `word` takes `order` too,
-and without `order` the bit width of the word gives the order: a word of
-order n in any rotation is 2^n - n to 2^n bits wide, so 2 to 4 bits is
-order 2, 5 to 8 bits order 3, 12 to 16 bits order 4, 27 to 32 bits order 5
-and 58 to 64 bits order 6.
+An action also takes a rotation of a sequence, such as `0x9af0` for
+`0x09af`, and rotates it to start with its n zero bits before it reads it;
+`windows` reads the rotation as given. An action that takes `seq` takes
+`order` too, and without `order` the bit width of `seq` gives the order: a
+sequence of order n in any rotation is 2^n - n to 2^n bits wide, so 2 to 4
+bits is order 2, 5 to 8 bits order 3, 12 to 16 bits order 4, 27 to 32 bits
+order 5 and 58 to 64 bits order 6.
 
 The output of an action is its result alone, as the output of a calculator:
 
 | Action | Arguments | Output |
 | ------ | --------- | ------ |
-| `expand` | `word` of order 2 to 5, `mask` | the child, such as `0x07dcd629` |
-| `collapse` | `word` of order 3 to 6 | the parent and the mask of the word in the parent, such as `0x0f65 127` |
-| `path` | `address` | the words of the address without the root, in hexadecimal without `0x`, such as `1d.0f65.07dcd629.03f79d71b4cb0a89` |
-| `address` | `word` of order 3 to 6 | the address, such as `1.7.127.32767` |
-| `children` | `word` of order 2 to 5, `first`, `limit` | the children from the mask `first` on, at most `limit` (64 by default), one on a line |
-| `windows` | `word` of order 2 to 6 | for each place from the most significant bit, the value of the n bits that start there for order n, one on a line |
-| `rank` | either `word` of order 2 to 6, or `address` alone | zero-based rank among *all* normalized words of that order, sorted as unsigned integers |
-| `unrank` | `order` 2 to 6, `rank` | the word and its dotted decimal mask address, separated by a space; the root is just `0x3` |
+| `expand` | `seq` of order 2 to 5, `mask` | the child, such as `0x07dcd629` |
+| `collapse` | `seq` of order 3 to 6 | the parent and the mask of the sequence in the parent, such as `0x0f65 127` |
+| `path` | `addr` | the sequences of the address without the root, in hexadecimal without `0x`, such as `1d.0f65.07dcd629.03f79d71b4cb0a89` |
+| `address` | `seq` of order 3 to 6 | the address, such as `1.7.127.32767` |
+| `children` | `seq` of order 2 to 5, `first`, `limit` | the children from the mask `first` on, at most `limit` (64 by default), one on a line |
+| `windows` | `seq` of order 2 to 6 | for each place from the most significant bit, the value of the n bits that start there for order n, one on a line |
+| `rank` | either `seq` of order 2 to 6, or `addr` alone | zero-based rank among *all* normalized sequences of that order, sorted as unsigned integers |
+| `unrank` | `order` 2 to 6, `rank` | the sequence and its dotted decimal mask address, separated by a space; the root is just `0x3` |
 | `ordered` | `order` 2 to 6, optional `first` and `limit` | consecutive `unrank` rows from rank `first` (default 0), at most `limit` (1 to 256, default 64) |
 
 For example, `unrank` with `order:6, rank:1234567` returns
-`0x021d16a7b37e4ae3 0.1.100.10548`; `rank` with `address:"0.1.100.10548"`
+`0x021d16a7b37e4ae3 0.1.100.10548`; `rank` with `addr:"0.1.100.10548"`
 returns `1234567`. The orders 2 through 6 contain 1, 2, 16, 2048 and
-67108864 words respectively. `unrank` refuses a rank outside its order;
+67108864 sequences respectively. `unrank` refuses a rank outside its order;
 `ordered` stops at the end and returns no rows for `first` past the last rank.
-It seeks by counting whole prefix blocks, not by visiting earlier words.
+It seeks by counting whole prefix blocks, not by visiting earlier sequences.
 `children` still enumerates a single parent's children in *mask* order.
 
-An action refuses an argument that it does not use, and a word that is no
-word of its order in any rotation. The definition of the tool lists the
-arguments of each action in `_meta.askai.takes`: for `rank`, either `word`
-and `order`, or `address`.
+An action refuses an argument that it does not use, and a number that is no
+sequence of its order in any rotation. The definition of the tool lists the
+arguments of each action in `_meta.askai.takes`: for `rank`, either `seq`
+and `order`, or `addr`.
 
 ## Limits
 

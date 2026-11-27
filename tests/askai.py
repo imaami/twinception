@@ -20127,13 +20127,13 @@ def check_debruijn(binary, up, debruijn):
             # clients, and the plugin refuses every other argument.
             takes = tools[1]["_meta"]["askai"]["takes"]
             assert takes == {
-                "expand": [["word", "order", "mask", "offset"]],
-                "collapse": [["word", "order", "offset"]],
-                "path": [["address", "offset"]],
-                "address": [["word", "order", "offset"]],
-                "children": [["word", "order", "first", "limit", "offset"]],
-                "windows": [["word", "order", "offset"]],
-                "rank": [["word", "order", "offset"], ["address", "offset"]],
+                "expand": [["seq", "order", "mask", "offset"]],
+                "collapse": [["seq", "order", "offset"]],
+                "path": [["addr", "offset"]],
+                "address": [["seq", "order", "offset"]],
+                "children": [["seq", "order", "first", "limit", "offset"]],
+                "windows": [["seq", "order", "offset"]],
+                "rank": [["seq", "order", "offset"], ["addr", "offset"]],
                 "unrank": [["order", "rank", "offset"]],
                 "ordered": [["order", "first", "limit", "offset"]]}, takes
             for action, sets in takes.items():
@@ -20144,57 +20144,57 @@ def check_debruijn(binary, up, debruijn):
 
             # The output of an action is its result alone. A child, and the
             # parent of the child with the mask of the child.
-            assert ok(ai, action="expand", word="0x0f65", order=4, mask=127) == "0x07dcd629\n"
-            assert ok(ai, action="expand", word="0x04653adf", order=5, mask=32767) == \
+            assert ok(ai, action="expand", seq="0x0f65", order=4, mask=127) == "0x07dcd629\n"
+            assert ok(ai, action="expand", seq="0x04653adf", order=5, mask=32767) == \
                 "0x03f668bab7929c61\n"
-            assert ok(ai, action="expand", word="0x3", order=2, mask=0) == "0x17\n"
-            assert ok(ai, action="collapse", word="0x03f79d71b4cb0a89", order=6) == \
+            assert ok(ai, action="expand", seq="0x3", order=2, mask=0) == "0x17\n"
+            assert ok(ai, action="collapse", seq="0x03f79d71b4cb0a89", order=6) == \
                 "0x07dcd629 32767\n"
-            assert ok(ai, action="collapse", word="0x1d", order=3) == "0x3 1\n"
-            # The words of an address, and the address of a word. The masks 0
-            # lead to the numerically first word of each order, and the
-            # largest masks to the last.
+            assert ok(ai, action="collapse", seq="0x1d", order=3) == "0x3 1\n"
+            # The sequences of an address, and the address of a sequence. The
+            # masks 0 lead to the numerically first sequence of each order,
+            # and the largest masks to the last.
             chain = "1d.0f65.07dcd629.03f79d71b4cb0a89\n"
-            assert ok(ai, action="path", address="1.7.127.32767") == chain
-            assert ok(ai, action="path", address="1.7.0x7f.0x7fff") == chain
-            assert ok(ai, action="path", address="0.0.0.0") == \
+            assert ok(ai, action="path", addr="1.7.127.32767") == chain
+            assert ok(ai, action="path", addr="1.7.0x7f.0x7fff") == chain
+            assert ok(ai, action="path", addr="0.0.0.0") == \
                 "17.09af.04653adf.0218a392cd3d5dbf\n"
-            assert ok(ai, action="path", address="0.0") == "17.09af\n"
-            assert ok(ai, action="address", word="0x03f79d71b4cb0a89", order=6) == \
+            assert ok(ai, action="path", addr="0.0") == "17.09af\n"
+            assert ok(ai, action="address", seq="0x03f79d71b4cb0a89", order=6) == \
                 "1.7.127.32767\n"
-            assert ok(ai, action="address", word="0x17", order=3) == "0\n"
-            # The children of a word, one on a line, from the mask first on.
-            assert ok(ai, action="children", word="0x3", order=2) == "0x17\n0x1d\n"
-            assert ok(ai, action="children", word="0x17", order=3) == \
+            assert ok(ai, action="address", seq="0x17", order=3) == "0\n"
+            # The children of a sequence, one on a line, from the mask first on.
+            assert ok(ai, action="children", seq="0x3", order=2) == "0x17\n0x1d\n"
+            assert ok(ai, action="children", seq="0x17", order=3) == \
                 "0x09af\n0x0d2f\n0x0a6f\n0x0d79\n0x09eb\n0x0f4b\n0x0a7b\n0x0f59\n"
-            assert ok(ai, action="children", word="0x17", order=3, first=6, limit=5) == \
+            assert ok(ai, action="children", seq="0x17", order=3, first=6, limit=5) == \
                 "0x0a7b\n0x0f59\n"
-            assert ok(ai, action="children", word="0x04653adf", order=5, first=32767) == \
+            assert ok(ai, action="children", seq="0x04653adf", order=5, first=32767) == \
                 "0x03f668bab7929c61\n"
-            whole = ok(ai, action="children", word="0x09af", order=4, limit=128)
+            whole = ok(ai, action="children", seq="0x09af", order=4, limit=128)
             lines = whole.split("\n")
             assert len(lines) == 129 and lines[0] == "0x04653adf" and \
                 len(set(lines[:128])) == 128, lines[:3]
-            assert ok(ai, action="children", word="0x09af", order=4, limit=128,
+            assert ok(ai, action="children", seq="0x09af", order=4, limit=128,
                       offset=100) == whole[100:]
-            assert ok(ai, action="children", word="0x09af", order=4, first=128) == ""
-            # Each value of order bits is in the word once.
-            assert ok(ai, action="windows", word="0x17", order=3) == \
+            assert ok(ai, action="children", seq="0x09af", order=4, first=128) == ""
+            # Each value of order bits is in the sequence once.
+            assert ok(ai, action="windows", seq="0x17", order=3) == \
                 "0\n1\n2\n5\n3\n7\n6\n4\n"
-            values = ok(ai, action="windows", word="0x0218a392cd3d5dbf", order=6).split()
+            values = ok(ai, action="windows", seq="0x0218a392cd3d5dbf", order=6).split()
             assert sorted(map(int, values)) == list(range(64)), values
-            # A word or a mask is a number as strtoll() reads it with the
+            # A sequence or a mask is a number as strtoll() reads it with the
             # base 0, after white space but without a + sign: hexadecimal
             # after 0x, binary after 0b, octal after 0, else decimal. A
             # negative number stands for its two's complement in the bits of
-            # the word or mask: -72 is 0xb8 in 8 bits, a rotation of 0x17.
+            # the sequence or mask: -72 is 0xb8 in 8 bits, a rotation of 0x17.
             for x in ("0x17", "0X17", "0b10111", "0B10111", "027", "23", " \v23", "-72",
                       "-0x48", "-0b1001000"):
-                assert ok(ai, action="children", word=x, order=3, limit=1) == "0x09af\n", x
+                assert ok(ai, action="children", seq=x, order=3, limit=1) == "0x09af\n", x
             value = 0x021d16a7b37e4ae3
             signed6 = ((value << 6 | value >> 58) & ((1 << 64) - 1)) - (1 << 64)
             assert signed6 < 0 and \
-                ok(ai, action="rank", word=str(signed6), order=6) == "1234567\n"
+                ok(ai, action="rank", seq=str(signed6), order=6) == "1234567\n"
             # A prefix on the leftmost mask is the base of all the masks. A
             # lone 0 has no prefix, and without a prefix on the leftmost
             # mask, each mask takes the base from its own prefix. -1 is the
@@ -20202,54 +20202,54 @@ def check_debruijn(binary, up, debruijn):
             for a in ("0x1.7.7f.7fff", "0x1.0x7.0x7f.0x7fff", "01.7.177.77777",
                       "0b1.111.1111111.111111111111111", "1.07.0x7f.0b111111111111111",
                       "-1.-1.-1.-1", "0x1.-1.-1.-1", " 1. 7. 127. 32767"):
-                assert ok(ai, action="path", address=a) == chain, a
-            assert ok(ai, action="path", address="0b1.110.1010101.111110000011111") == \
-                ok(ai, action="path", address="1.6.85.31775")
-            assert ok(ai, action="path", address="0.-2") == ok(ai, action="path", address="0.6")
+                assert ok(ai, action="path", addr=a) == chain, a
+            assert ok(ai, action="path", addr="0b1.110.1010101.111110000011111") == \
+                ok(ai, action="path", addr="1.6.85.31775")
+            assert ok(ai, action="path", addr="0.-2") == ok(ai, action="path", addr="0.6")
 
-            # Without order, the bit width of the word gives the order. An
-            # action reads a rotation of a word as the word, and windows
+            # Without order, the bit width of seq gives the order. An action
+            # reads a rotation of a sequence as the sequence, and windows
             # reads the rotation as given.
-            def rotations(word, order):
-                bits, value = 1 << order, int(word, 16)
+            def rotations(seq, order):
+                bits, value = 1 << order, int(seq, 16)
                 return [f"0x{(value << r | value >> (bits - r)) & ((1 << bits) - 1):x}"
                         for r in range(bits)]
 
-            assert ok(ai, action="expand", word="0x0f65", mask=127) == "0x07dcd629\n"
-            assert ok(ai, action="children", word="3") == "0x17\n0x1d\n"
-            assert ok(ai, action="rank", word="0x021d16a7b37e4ae3") == "1234567\n"
+            assert ok(ai, action="expand", seq="0x0f65", mask=127) == "0x07dcd629\n"
+            assert ok(ai, action="children", seq="3") == "0x17\n0x1d\n"
+            assert ok(ai, action="rank", seq="0x021d16a7b37e4ae3") == "1234567\n"
             for x in rotations("03f79d71b4cb0a89", 6):
-                assert ok(ai, action="collapse", word=x) == "0x07dcd629 32767\n", x
-                assert ok(ai, action="address", word=x, order=6) == "1.7.127.32767\n", x
+                assert ok(ai, action="collapse", seq=x) == "0x07dcd629 32767\n", x
+                assert ok(ai, action="address", seq=x, order=6) == "1.7.127.32767\n", x
             for x in rotations("0f65", 4):
-                assert ok(ai, action="expand", word=x, mask=127) == "0x07dcd629\n", x
-                assert ok(ai, action="collapse", word=x, order=4) == "0x1d 7\n", x
+                assert ok(ai, action="expand", seq=x, mask=127) == "0x07dcd629\n", x
+                assert ok(ai, action="collapse", seq=x, order=4) == "0x1d 7\n", x
             base = "0 1 2 5 3 7 6 4".split()
             for r, x in enumerate(rotations("17", 3)):
-                assert ok(ai, action="children", word=x, first=6) == "0x0a7b\n0x0f59\n", x
-                assert ok(ai, action="rank", word=x) == "0\n", x
-                assert ok(ai, action="windows", word=x).split() == base[r:] + base[:r], x
+                assert ok(ai, action="children", seq=x, first=6) == "0x0a7b\n0x0f59\n", x
+                assert ok(ai, action="rank", seq=x) == "0\n", x
+                assert ok(ai, action="windows", seq=x).split() == base[r:] + base[:r], x
             for x in rotations("3", 2):
-                assert ok(ai, action="expand", word=x, mask=1) == "0x1d\n", x
+                assert ok(ai, action="expand", seq=x, mask=1) == "0x1d\n", x
 
-            # Independent order-4 oracle: old mask-order traversal, sorted by word.
+            # Independent order-4 oracle: old mask-order traversal, sorted by sequence.
             pairs = []
-            for m, parent in enumerate(ok(ai, action="children", word="3", order=2).split()):
-                children = ok(ai, action="children", word=parent, order=3).split()
+            for m, parent in enumerate(ok(ai, action="children", seq="3", order=2).split()):
+                children = ok(ai, action="children", seq=parent, order=3).split()
                 pairs.extend((w, f"{m}.{j}") for j, w in enumerate(children))
             pairs.sort(key=lambda p: int(p[0], 16))
             rows = [f"{w} {a}\n" for w, a in pairs]
             assert len(rows) == 16 and ok(ai, action="ordered", order=4) == "".join(rows)
             for k, (w, a) in enumerate(pairs):
-                assert ok(ai, action="rank", word=w, order=4) == f"{k}\n"
-                assert ok(ai, action="rank", address=a) == f"{k}\n"
+                assert ok(ai, action="rank", seq=w, order=4) == f"{k}\n"
+                assert ok(ai, action="rank", addr=a) == f"{k}\n"
                 assert ok(ai, action="unrank", order=4, rank=k) == rows[k]
             assert ok(ai, action="ordered", order=4, first=7, limit=3) == "".join(rows[7:10])
             assert ok(ai, action="ordered", order=4, first=7, limit=3,
                       offset=len(rows[7])) == "".join(rows[8:10])
             assert ok(ai, action="ordered", order=4, first=16) == ""
             assert ok(ai, action="unrank", order=2, rank=0) == "0x3\n"
-            assert ok(ai, action="rank", order=2, word="3") == "0\n"
+            assert ok(ai, action="rank", order=2, seq="3") == "0\n"
 
             # A page crosses parent boundaries. Large seeks need no table or scan.
             assert ok(ai, action="ordered", order=6, limit=3) == (
@@ -20260,50 +20260,51 @@ def check_debruijn(binary, up, debruijn):
                             (33554432, "0x0308a4d5971dbcfd", "1.0.0.1"),
                             (67108863, "0x03f79d71b4cb0a89", "1.7.127.32767")):
                 assert ok(ai, action="unrank", order=6, rank=k) == f"{w} {a}\n"
-                assert ok(ai, action="rank", order=6, word=w) == f"{k}\n"
-                assert ok(ai, action="rank", address=a) == f"{k}\n"
+                assert ok(ai, action="rank", order=6, seq=w) == f"{k}\n"
+                assert ok(ai, action="rank", addr=a) == f"{k}\n"
             assert ok(ai, action="ordered", order=6, first=67108862, limit=256) == (
                 "0x03f79d71b4cb0915 1.7.127.32765\n0x03f79d71b4cb0a89 1.7.127.32767\n")
             assert ok(ai, action="ordered", order=6, first=4294967295) == ""
 
-            no_word = "0x1e is no word of order 3."
-            no_number = ("The word argument must be a string of a 64-bit number without a "
+            no_sequence = "0x1e is no sequence of order 3."
+            no_number = ("The seq argument must be a string of a 64-bit number without a "
                          "+ sign: hexadecimal after 0x, binary after 0b, octal after 0, else "
                          "decimal.")
-            negative = "A negative word needs the argument order: a word of order n has 2^n bits."
+            negative = ("A negative sequence needs the argument order: a sequence of order n "
+                        "has 2^n bits.")
             for arguments, text in (
-                    ({"action": "expand", "word": "0x1e", "order": 3, "mask": 0}, no_word),
-                    ({"action": "collapse", "word": "0x1e", "order": 3}, no_word),
-                    ({"action": "address", "word": "0x1e", "order": 3}, no_word),
-                    ({"action": "children", "word": "0x1e", "order": 3}, no_word),
-                    ({"action": "windows", "word": "0x1e", "order": 3}, no_word),
-                    ({"action": "rank", "word": "0x1e", "order": 3}, no_word),
-                    ({"action": "collapse", "word": "0x1e"}, no_word),
-                    ({"action": "collapse", "word": "0x17", "order": 4},
-                     "0x0017 is no word of order 4."),
-                    ({"action": "windows", "word": "0x1fffff"},
-                     "0x001fffff is no word of order 5."),
-                    ({"action": "windows", "word": "0x1"},
-                     "0x1 is no word of any order from 2 to 6."),
-                    ({"action": "rank", "word": "0"}, "0x0 is no word of any order from 2 to 6."),
-                    ({"action": "children", "word": "17"}, "0x11 is no word of order 3."),
-                    ({"action": "windows", "word": "-1"}, negative),
-                    ({"action": "rank", "word": str(signed6)}, negative),
-                    ({"action": "windows", "word": "-1", "order": 3}, "0xff is no word of order 3."),
-                    ({"action": "windows", "word": "-129", "order": 3},
-                     "0xffffffffffffff7f is no word of order 3."),
-                    ({"action": "windows", "word": "0xffffffffffffffff"},
-                     "0xffffffffffffffff is no word of order 6."),
-                    ({"action": "expand", "word": "0x0218a392cd3d5dbf", "mask": 0},
-                     "0x0218a392cd3d5dbf is a word of order 6, and expand takes the orders "
+                    ({"action": "expand", "seq": "0x1e", "order": 3, "mask": 0}, no_sequence),
+                    ({"action": "collapse", "seq": "0x1e", "order": 3}, no_sequence),
+                    ({"action": "address", "seq": "0x1e", "order": 3}, no_sequence),
+                    ({"action": "children", "seq": "0x1e", "order": 3}, no_sequence),
+                    ({"action": "windows", "seq": "0x1e", "order": 3}, no_sequence),
+                    ({"action": "rank", "seq": "0x1e", "order": 3}, no_sequence),
+                    ({"action": "collapse", "seq": "0x1e"}, no_sequence),
+                    ({"action": "collapse", "seq": "0x17", "order": 4},
+                     "0x0017 is no sequence of order 4."),
+                    ({"action": "windows", "seq": "0x1fffff"},
+                     "0x001fffff is no sequence of order 5."),
+                    ({"action": "windows", "seq": "0x1"},
+                     "0x1 is no sequence of any order from 2 to 6."),
+                    ({"action": "rank", "seq": "0"}, "0x0 is no sequence of any order from 2 to 6."),
+                    ({"action": "children", "seq": "17"}, "0x11 is no sequence of order 3."),
+                    ({"action": "windows", "seq": "-1"}, negative),
+                    ({"action": "rank", "seq": str(signed6)}, negative),
+                    ({"action": "windows", "seq": "-1", "order": 3}, "0xff is no sequence of order 3."),
+                    ({"action": "windows", "seq": "-129", "order": 3},
+                     "0xffffffffffffff7f is no sequence of order 3."),
+                    ({"action": "windows", "seq": "0xffffffffffffffff"},
+                     "0xffffffffffffffff is no sequence of order 6."),
+                    ({"action": "expand", "seq": "0x0218a392cd3d5dbf", "mask": 0},
+                     "0x0218a392cd3d5dbf is a sequence of order 6, and expand takes the orders "
                      "2 to 5."),
-                    ({"action": "collapse", "word": "0x9"},
-                     "0x9 is a word of order 2, and collapse takes the orders 3 to 6."),
-                    ({"action": "expand", "word": "0x17", "mask": 8},
+                    ({"action": "collapse", "seq": "0x9"},
+                     "0x9 is a sequence of order 2, and collapse takes the orders 3 to 6."),
+                    ({"action": "expand", "seq": "0x17", "mask": 8},
                      "The mask argument must be a whole number from 0 to 7 for order 3."),
                     ({"action": "ordered"}, "ordered needs the argument order."),
-                    ({"action": "rank", "address": "1.8"}, None),
-                    ({"action": "rank", "address": "1", "order": 3}, "rank takes no argument order."),
+                    ({"action": "rank", "addr": "1.8"}, None),
+                    ({"action": "rank", "addr": "1", "order": 3}, "rank takes no argument order."),
                     ({"action": "unrank", "order": 2, "rank": 1},
                      "rank must be an integer from 0 to 0 for order 2."),
                     ({"action": "unrank", "order": 6, "rank": -1},
@@ -20316,66 +20317,66 @@ def check_debruijn(binary, up, debruijn):
                     ({"action": "ordered", "order": 6, "rank": 0}, "ordered takes no argument rank."),
                     ({"action": "grow"}, "The action argument must be one of: expand, "
                      "collapse, path, address, children, windows, rank, unrank, ordered."),
-                    ({"action": "expand", "word": "0x17", "order": 3},
+                    ({"action": "expand", "seq": "0x17", "order": 3},
                      "expand needs the argument mask."),
-                    ({"action": "collapse", "word": "0x17", "order": 3, "mask": 1},
+                    ({"action": "collapse", "seq": "0x17", "order": 3, "mask": 1},
                      "collapse takes no argument mask."),
-                    ({"action": "path", "address": "1", "word": "0x17"},
-                     "path takes no argument word."),
-                    ({"action": "windows", "word": "0x17", "order": 3, "first": 1},
+                    ({"action": "path", "addr": "1", "seq": "0x17"},
+                     "path takes no argument seq."),
+                    ({"action": "windows", "seq": "0x17", "order": 3, "first": 1},
                      "windows takes no argument first."),
-                    ({"action": "expand", "word": "0x17", "order": 6, "mask": 0},
+                    ({"action": "expand", "seq": "0x17", "order": 6, "mask": 0},
                      "The order argument must be a whole number from 2 to 5 for expand."),
-                    ({"action": "collapse", "word": "0x3", "order": 2},
+                    ({"action": "collapse", "seq": "0x3", "order": 2},
                      "The order argument must be a whole number from 3 to 6 for collapse."),
-                    ({"action": "address", "word": "0x3", "order": 2},
+                    ({"action": "address", "seq": "0x3", "order": 2},
                      "The order argument must be a whole number from 3 to 6 for address."),
-                    ({"action": "expand", "word": "0x17", "order": 3, "mask": 8},
+                    ({"action": "expand", "seq": "0x17", "order": 3, "mask": 8},
                      "The mask argument must be a whole number from 0 to 7 for order 3."),
-                    ({"action": "expand", "word": "xyz", "order": 3, "mask": 0}, no_number),
-                    ({"action": "expand", "word": "0x" + "1" * 17, "order": 3, "mask": 0},
+                    ({"action": "expand", "seq": "xyz", "order": 3, "mask": 0}, no_number),
+                    ({"action": "expand", "seq": "0x" + "1" * 17, "order": 3, "mask": 0},
                      no_number),
-                    ({"action": "children", "word": "09af"}, no_number),
-                    ({"action": "children", "word": "0x17 "}, no_number),
-                    ({"action": "children", "word": "0x17\0"}, no_number),
-                    ({"action": "children", "word": ""}, no_number),
-                    ({"action": "children", "word": 23}, no_number),
-                    ({"action": "children", "word": "+23", "order": 3}, no_number),
-                    ({"action": "children", "word": " +23"}, no_number),
-                    ({"action": "children", "word": "\v+23"}, no_number),
-                    ({"action": "children", "word": "- 23", "order": 3}, no_number),
-                    ({"action": "children", "word": "0x17", "order": 3, "limit": 0},
+                    ({"action": "children", "seq": "09af"}, no_number),
+                    ({"action": "children", "seq": "0x17 "}, no_number),
+                    ({"action": "children", "seq": "0x17\0"}, no_number),
+                    ({"action": "children", "seq": ""}, no_number),
+                    ({"action": "children", "seq": 23}, no_number),
+                    ({"action": "children", "seq": "+23", "order": 3}, no_number),
+                    ({"action": "children", "seq": " +23"}, no_number),
+                    ({"action": "children", "seq": "\v+23"}, no_number),
+                    ({"action": "children", "seq": "- 23", "order": 3}, no_number),
+                    ({"action": "children", "seq": "0x17", "order": 3, "limit": 0},
                      "first must be a whole number from 0, and limit a whole number from "
                      "1 to 32768."),
-                    ({"action": "path", "address": "1.8"},
-                     "The address argument must be 1 to 4 masks with a dot between two, "
+                    ({"action": "path", "addr": "1.8"},
+                     "The addr argument must be 1 to 4 masks with a dot between two, "
                      "such as 1.7.127.32767. The masks are at most 1, 7, 127 and 32767, in "
                      "this order."),
-                    ({"action": "path", "address": "1.7.127.32767.0"}, None),
-                    ({"action": "path", "address": "1..7"}, None),
-                    ({"action": "path", "address": "1."}, None),
-                    ({"action": "path", "address": "."}, None),
-                    ({"action": "path", "address": ""}, None),
-                    ({"action": "path", "address": "1.010"}, None),
-                    ({"action": "path", "address": "1.7 "}, None),
-                    ({"action": "path", "address": "0x"}, None),
-                    ({"action": "path", "address": "+1.7"}, None),
-                    ({"action": "path", "address": "1.+7"}, None),
-                    ({"action": "path", "address": "0b1.07.0x7f.32767"}, None),
-                    ({"action": "path", "address": "01.8"}, None),
-                    ({"action": "path", "address": "0b1.0x1"}, None),
-                    ({"action": "path", "address": "0x1.7.127"}, None),
-                    ({"action": "path", "address": "-2"}, None),
-                    ({"action": "path", "address": "1.-9"}, None),
-                    ({"action": "expand", "word": "0x17", "order": 3, "mask": 0, "x": 1},
+                    ({"action": "path", "addr": "1.7.127.32767.0"}, None),
+                    ({"action": "path", "addr": "1..7"}, None),
+                    ({"action": "path", "addr": "1."}, None),
+                    ({"action": "path", "addr": "."}, None),
+                    ({"action": "path", "addr": ""}, None),
+                    ({"action": "path", "addr": "1.010"}, None),
+                    ({"action": "path", "addr": "1.7 "}, None),
+                    ({"action": "path", "addr": "0x"}, None),
+                    ({"action": "path", "addr": "+1.7"}, None),
+                    ({"action": "path", "addr": "1.+7"}, None),
+                    ({"action": "path", "addr": "0b1.07.0x7f.32767"}, None),
+                    ({"action": "path", "addr": "01.8"}, None),
+                    ({"action": "path", "addr": "0b1.0x1"}, None),
+                    ({"action": "path", "addr": "0x1.7.127"}, None),
+                    ({"action": "path", "addr": "-2"}, None),
+                    ({"action": "path", "addr": "1.-9"}, None),
+                    ({"action": "expand", "seq": "0x17", "order": 3, "mask": 0, "x": 1},
                      "x is not an argument of the tool.")):
                 got = refused(ai, **arguments)
-                assert got == text if text else got.startswith("The address argument"), \
+                assert got == text if text else got.startswith("The addr argument"), \
                     (arguments, got)
     print("debruijn: mask tree, windows, numeric rank, unrank and ordered pages; the "
-          "order from the width, rotated words; numbers in each base, negative numbers, "
-          "the base of an address from its first mask; refused words, orders, ranks, "
-          "masks, addresses and arguments: PASS")
+          "order from the width, rotated sequences; numbers in each base, negative "
+          "numbers, the base of an address from its first mask; refused sequences, orders, "
+          "ranks, masks, addresses and arguments: PASS")
 
 
 def check_godbolt(binary, up, godbolt):
