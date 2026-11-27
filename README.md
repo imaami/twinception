@@ -2227,24 +2227,25 @@ numeric ordering in `src/debruijn_order.c`. The plugin has no options:
 { "path": "/usr/libexec/askai/debruijn.so" }
 ```
 
-A sequence of order n has 2^n bits, and every value of n bits is in the
+A sequence of order n is 2^n bits long, and every value of n bits is in the
 sequence once, also across the end of the sequence to its start. The
 sequences of the tool start with n zero bits, and the output shows them as
 hexadecimal digits, such as `0x09af` for order 4. The sequence `0x3` of
-order 2 is the root of a tree. A sequence of order n from 2 to 5 has one
-child of order n+1 for each mask: 2, 8, 128 and 32768 children for the
-orders 2, 3, 4 and 5. A sequence of order 3 to 6 is the child of exactly one
-sequence. The address of a sequence is the masks on the way from the root,
-such as `1.7.127.32767`. The masks 0 lead to the numerically first sequence
-of each order and the largest masks to the last: the sequences of the
-address `0.0.0.0` are `17.09af.04653adf.0218a392cd3d5dbf`, and those of
-`1.7.127.32767` are `1d.0f65.07dcd629.03f79d71b4cb0a89`.
+order 2 is the root of a tree. A sequence of order n from 2 to 5 is the
+parent of one sequence of order n+1 for each mask: 2, 8, 128 and 32768
+children for the orders 2, 3, 4 and 5. A sequence of order 3 to 6 is the
+child of exactly one sequence. The address of a sequence is the masks on the
+way from the root, such as `1.7.127.32767`. The masks 0 lead to the
+numerically first sequence of each order and the largest masks to the last:
+the sequences of the address `0.0.0.0` are
+`17.09af.04653adf.0218a392cd3d5dbf`, and those of `1.7.127.32767` are
+`1d.0f65.07dcd629.03f79d71b4cb0a89`.
 
-A call gives the sequence of an action in one of three ways. `seq` is the
+The sequence of an action is passed in one of three forms. `seq` is the
 sequence as a number. `addr` is the address of the sequence. `order` and
 `rank` are the rank of the sequence in the order: the zero-based position
 among the sequences of that order, sorted as unsigned numbers. So
-`seq:"0x09af"`, `addr:"0.0"` and `order:4, rank:0` give the same sequence.
+`seq:"0x09af"`, `addr:"0.0"` and `order:4, rank:0` are the same sequence.
 `unrank` takes `order` and `rank` only, and `ordered` takes no sequence.
 
 `seq`, and each mask of `addr`, is a number as `strtoll()` reads it
@@ -2264,12 +2265,12 @@ sequence therefore needs `order`, so that its sign bit is known. `-1` is the
 largest mask, and `-1.-1.-1.-1` is `1.7.127.32767`.
 
 `seq` can be a rotation of a sequence, such as `0x9af0` for `0x09af`. An
-action rotates it to start with its n zero bits before it reads it;
-`windows` reads the rotation as given. `order` is optional with `seq`, and
-without `order` the bit width of `seq` gives the order: a sequence of order
-n in any rotation is 2^n - n to 2^n bits wide, so 2 to 4 bits is order 2,
-5 to 8 bits order 3, 12 to 16 bits order 4, 27 to 32 bits order 5 and 58 to
-64 bits order 6.
+action rotates `seq` to start with its n zero bits before it reads it, and
+`windows` reads the rotation unchanged. `order` is optional with `seq`.
+Without `order`, the order is computed from the bit width of `seq`: a
+sequence of order n in any rotation is 2^n - n to 2^n bits wide, so 2 to 4
+bits is order 2, 5 to 8 bits order 3, 12 to 16 bits order 4, 27 to 32 bits
+order 5 and 58 to 64 bits order 6.
 
 The output of an action is its result alone, as the output of a calculator:
 
@@ -2295,8 +2296,8 @@ It seeks by counting whole prefix blocks, not by visiting earlier sequences.
 
 An action refuses an argument that it does not use, and a number that is no
 sequence of its order in any rotation. The definition of the tool lists the
-arguments of each action in `_meta.askai.takes`, with a set for each way to
-give the sequence of the action.
+arguments of each action in `_meta.askai.takes`, with a set for each form
+of the sequence of the action.
 
 ## Limits
 

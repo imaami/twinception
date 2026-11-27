@@ -20310,8 +20310,8 @@ def check_debruijn(binary, up, debruijn):
             no_number = ("The seq argument must be a string of a 64-bit number without a "
                          "+ sign: hexadecimal after 0x, binary after 0b, octal after 0, else "
                          "decimal.")
-            negative = ("A negative sequence needs the argument order: a sequence of order n "
-                        "has 2^n bits.")
+            negative = ("A negative seq needs the argument order: a sequence of order n is "
+                        "2^n bits long.")
             for arguments, text in (
                     ({"action": "expand", "seq": "0x1e", "order": 3, "mask": 0}, no_sequence),
                     ({"action": "collapse", "seq": "0x1e", "order": 3}, no_sequence),

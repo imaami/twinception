@@ -1,19 +1,19 @@
 /* debruijn_plugin.c - a plugin with one tool, debruijn, that explores the
- * tree of the binary de Bruijn sequences of the orders 2 to 6. The library
- * (src/debruijn.h) calls a sequence a word.
+ * tree of the binary de Bruijn sequences of the orders 2 to 6. In the
+ * library (src/debruijn.h), a sequence is named a word.
  *
- * A sequence of order n has 2^n bits, and every value of n bits is in the
- * sequence once, also across the end of the sequence to its start. The
+ * A sequence of order n is 2^n bits long, and every value of n bits is in
+ * the sequence once, also across the end of the sequence to its start. The
  * sequences of debruijn.h start with n zero bits. The sequence 0x3 of order
- * 2 is the root of the tree. A sequence of order n from 2 to 5 has one
- * child of order n + 1 for each mask from 0 to 2^(2^(n-1)-1) - 1
- * (debruijn_expand()), and a sequence of order 3 to 6 is the child of
- * exactly one sequence (debruijn_collapse()). The address of a sequence is
- * the masks on the way from the root to the sequence, such as
- * 1.7.127.32767. The masks 0 lead to the numerically first sequence of each
- * order, and the largest masks to the last. The rank of a sequence is its
- * position among the sequences of its order, sorted as unsigned numbers
- * and counted from 0 (debruijn_rank()).
+ * 2 is the root of the tree. A sequence of order n from 2 to 5 is the
+ * parent of one sequence of order n + 1 for each mask from 0 to
+ * 2^(2^(n-1)-1) - 1 (debruijn_expand()), and a sequence of order 3 to 6 is
+ * the child of exactly one sequence (debruijn_collapse()). The address of
+ * a sequence is the masks on the way from the root to the sequence, such
+ * as 1.7.127.32767. The masks 0 lead to the numerically first sequence of
+ * each order, and the largest masks to the last. The rank of a sequence is
+ * its position among the sequences of its order, sorted as unsigned
+ * numbers and counted from 0 (debruijn_rank()).
  *
  * The output of an action is its result and nothing else, as the output of
  * a calculator:
@@ -33,11 +33,11 @@
  *   0x021d16a7b37e4ae3 0.1.100.10548.
  * - ordered: rows as for unrank, from rank first on, at most limit rows.
  *
- * A call gives the sequence of an action in one of three ways
- * (debruijn_plugin_needs()): the argument seq is the sequence as a number,
- * the argument addr is its address, and the arguments order and rank are
- * its rank in the order. unrank takes order and rank only, and ordered
- * takes no sequence.
+ * The sequence of an action is in the arguments of a call in one of three
+ * forms (debruijn_plugin_needs()): the argument seq is the sequence as a
+ * number, the argument addr is the address of the sequence, and the
+ * arguments order and rank are the rank of the sequence in the order.
+ * unrank takes order and rank only, and ordered takes no sequence.
  *
  * seq, and each mask of addr, is a number as strtoll() and strtoull() read
  * it with the base 0, but without a + sign (debruijn_plugin_number()):
@@ -49,15 +49,15 @@
  * 2^(n-1) - 1 bits for a mask that expands a sequence of order n. The
  * sequences in the output are hexadecimal.
  *
- * seq can be a sequence in any rotation. An action rotates it to start
- * with its n zero bits (debruijn_normalize()) before the library reads it;
- * windows reads seq as it is given. Without the argument order, the bit
- * width of seq gives the order: a rotation of a sequence of order n is
- * 2^n - n to 2^n bits wide.
+ * seq can be a sequence in any rotation. An action rotates seq to start
+ * with its n zero bits (debruijn_normalize()) before the library reads it,
+ * and windows reads seq without that rotation. Without the argument order,
+ * the order is computed from the bit width of seq: a rotation of a
+ * sequence of order n is 2^n - n to 2^n bits wide.
  *
- * The plugin has no options, no instances and no data of its own, and a
- * call ends before its start() returns. check_debruijn (tests/askai.py)
- * runs it.
+ * The plugin defines no options, creates no instances and stores no data,
+ * and a call ends before its start() returns. check_debruijn
+ * (tests/askai.py) runs it.
  */
 #include <ctype.h>
 #include <errno.h>
@@ -109,13 +109,17 @@ static struct cstr_view const debruijn_plugin_arg_names[] = {
 /* The bit of the argument @p id in a set of arguments. */
 #define A(id) (UINT64_C(1) << DEBRUIJN_PLUGIN_ARG_##id)
 
-/* The actions of the tool: X(ID, name, needs, low, high, cap). needs is the
- * arguments that the action needs. An action that needs seq takes the
- * sequence in each of the three ways (debruijn_plugin_needs()), and order
- * with seq. The sequence of the action is of an order from low to high:
- * expand and children make a child, and collapse, path and address find a
- * parent. An action with a cap takes first and limit, and cap is the
- * largest limit. Every action takes offset.
+/* The actions of the tool: X(ID, name, needs, low, high, cap).
+ * - needs: the arguments that a call of the action must contain. If needs
+ *   contains seq, the call contains the sequence in one of the three forms
+ *   (debruijn_plugin_needs()), and order is optional beside seq.
+ * - low, high: the smallest and the largest order of the sequence of the
+ *   action. expand and children compute sequences of the next order, so
+ *   their largest order is 5. collapse, path and address compute the
+ *   parent of the sequence, so their smallest order is 3.
+ * - cap: the largest limit of an action that takes first and limit, and 0
+ *   for an action that takes neither.
+ * A call of every action can contain offset.
  */
 #define DEBRUIJN_PLUGIN_ACTION_LIST(X)                             \
         X(EXPAND,   "expand",   A(SEQ) | A(MASK),   2, 5, 0)       \
@@ -205,7 +209,7 @@ debruijn_plugin_digits (unsigned order)
 }
 
 /* Returns the largest mask of a sequence of the order @p order from 2 to
- * 5: a sequence has 2^(order-1) - 1 choice bits.
+ * 5: a mask of that order is 2^(order-1) - 1 bits wide.
  */
 static unsigned
 debruijn_plugin_masks (unsigned order)
@@ -224,9 +228,9 @@ debruijn_plugin_space (struct cstr_view text)
 	return text;
 }
 
-/* Returns the base that the prefix of the number at the start of @p text
- * gives, after white space and a minus sign: 16 for 0x, 2 for 0b and 8 for
- * a 0 before a digit. Returns 0 for a number without a prefix, such as 0.
+/* Returns the base of the prefix of the number at the start of @p text,
+ * after white space and a minus sign: 16 for 0x, 2 for 0b and 8 for a 0
+ * before a digit. Returns 0 for a number without a prefix, such as 0.
  */
 static int
 debruijn_plugin_base (struct cstr_view text)
@@ -250,15 +254,16 @@ debruijn_plugin_base (struct cstr_view text)
 
 /* Returns the number @p text as strtoll() reads it in the base @p base, or
  * as strtoull() reads it if it is over INT64_MAX. White space can precede
- * the number, but a + sign cannot. The base 0 takes the base from the
- * prefix: hexadecimal after 0x, binary after 0b, octal after 0, else
- * decimal. A negative number stands for its two's complement in @p bits
- * bits, from 1 to 64. If it does not fit in them, it keeps all 64 bits of
- * its two's complement, which makes it wider than @p bits bits.
+ * the number, but a + sign cannot. With the base 0, the prefix of the
+ * number is the base: hexadecimal after 0x, binary after 0b, octal after
+ * 0, else decimal. A negative number stands for its two's complement in
+ * @p bits bits, from 1 to 64. A negative number that does not fit in
+ * @p bits bits is returned as all 64 bits of its two's complement, which
+ * is wider than @p bits bits.
  *
  * Stores 0 in @p *e, or EDOM for a negative number if @p bits is 0, ERANGE
- * for a number that 64 bits cannot hold, or EINVAL if @p text is not one
- * number from its start to its end. strtoll() reads up to the first byte
+ * for a number that does not fit in 64 bits, or EINVAL if @p text is not
+ * one number from its start to its end. strtoll() reads up to the first byte
  * that cannot be in a number, which can be after @p text: the 0 that json-c
  * writes after a string, or the dot after a mask. A number that goes on
  * after @p text is refused.
@@ -301,9 +306,9 @@ debruijn_plugin_number (struct cstr_view  text,
 
 /* Reads the address @p text, 1 to 4 masks with a dot between two, each a
  * number as debruijn_plugin_number() reads it, into @p masks. A prefix on
- * the leftmost mask is the base of all the masks; without one, each mask
- * takes the base from its own prefix. Stores the number of masks in @p *n.
- * Returns 0 or EINVAL.
+ * the leftmost mask is the base of all the masks. Without it, each mask is
+ * read in the base of its own prefix. Stores the number of masks in
+ * @p *n. Returns 0 or EINVAL.
  */
 static int
 debruijn_plugin_address (struct cstr_view  text,
@@ -322,8 +327,8 @@ debruijn_plugin_address (struct cstr_view  text,
 			/* A dot ends no address. */
 			return EINVAL;
 		}
-		/* Mask n expands a sequence of order n + 2, which has
-		 * 2^(n+1) - 1 choice bits. */
+		/* Mask n expands a sequence of order n + 2, and is
+		 * 2^(n+1) - 1 bits wide. */
 		int e;
 		uint64_t const value = debruijn_plugin_number(part, *n ? base : 0,
 		                                              (1U << (*n + 1U)) - 1U, &e);
@@ -454,8 +459,8 @@ debruijn_plugin_path (struct debruijn_plugin_out *out,
 }
 
 /* Appends the address of @p seq of the order @p order and a newline to the
- * output @p out, and nothing for the root, which has no masks. Returns 0
- * or the error of debruijn_collapse().
+ * output @p out, and nothing for the root, whose address is empty. Returns
+ * 0 or the error of debruijn_collapse().
  */
 static int
 debruijn_plugin_locate (struct debruijn_plugin_out *out,
@@ -599,9 +604,11 @@ debruijn_plugin_upto (struct mcp_slot           *slot,
 	return e;
 }
 
-/* Returns the arguments that a call needs whose action needs @p needs, if
- * the call gives the arguments @p seen. A call gives a sequence as seq, or
- * in place of seq as addr, or as order and rank.
+/* Returns the arguments that a call must contain, for an action whose rule
+ * lists @p needs and a call that contains the arguments @p seen. The
+ * sequence of a call is the argument seq. A call that contains addr must
+ * contain addr in place of seq, and a call that contains rank must contain
+ * order and rank in place of seq.
  */
 static uint64_t
 debruijn_plugin_needs (uint64_t needs,
@@ -612,9 +619,10 @@ debruijn_plugin_needs (uint64_t needs,
 	return (needs & ~A(SEQ)) | (seen & A(ADDR) ? A(ADDR) : A(ORDER) | A(RANK));
 }
 
-/* Returns the arguments that a call takes whose action has the rule
- * @p rule and which needs the arguments @p needs: those, action and
- * offset, order with seq, and first and limit if the rule has a cap.
+/* Returns the arguments that a call can contain, for an action with the
+ * rule @p rule and a call that must contain @p needs: the arguments of
+ * @p needs, action and offset, order if @p needs contains seq, and first
+ * and limit if the cap of the rule is not 0.
  */
 static uint64_t
 debruijn_plugin_takes (struct debruijn_plugin_rule const *rule,
@@ -627,23 +635,24 @@ debruijn_plugin_takes (struct debruijn_plugin_rule const *rule,
 /* Returns the definition of debruijn as a new reference, or nullptr if
  * json-c cannot allocate memory. Its _meta.askai.takes lists the arguments
  * that each action takes, for the completion of clients: a set for each
- * way to give the sequence of the action.
+ * form of the sequence of the action.
  */
 static struct json_object *
 debruijn_plugin_definition (void const *service)
 {
 	(void)service;
-	static_assert(DEBRUIJN_PLUGIN_LIMIT == 64, "the description says");
-	/* The three ways to give a sequence: a call with seq, addr or rank. */
-	static uint64_t const ways[] = { A(SEQ), A(ADDR), A(RANK) };
-	struct jb_form forms[array_size(ways) * DEBRUIJN_PLUGIN_ACTIONS];
+	static_assert(DEBRUIJN_PLUGIN_LIMIT == 64, "the default limit in the description");
+	/* A call that contains seq, addr or rank, for each form of a sequence. */
+	static uint64_t const seen[] = { A(SEQ), A(ADDR), A(RANK) };
+	struct jb_form forms[array_size(seen) * DEBRUIJN_PLUGIN_ACTIONS];
 	size_t n = 0;
 	for (size_t i = 0; i < DEBRUIJN_PLUGIN_ACTIONS; ++i) {
 		struct debruijn_plugin_rule const *const rule = &debruijn_plugin_rules[i];
-		/* An action that needs no seq has one set of arguments. */
-		size_t const sets = rule->needs & A(SEQ) ? array_size(ways) : 1;
-		for (size_t way = 0; way < sets; ++way) {
-			uint64_t const needs = debruijn_plugin_needs(rule->needs, ways[way]);
+		/* An action is in one set of arguments, or in one set for each
+		 * form if its rule lists seq. */
+		size_t const sets = rule->needs & A(SEQ) ? array_size(seen) : 1;
+		for (size_t form = 0; form < sets; ++form) {
+			uint64_t const needs = debruijn_plugin_needs(rule->needs, seen[form]);
 			forms[n++] = (struct jb_form){
 				.args   = debruijn_plugin_takes(rule, needs) & ~A(ACTION),
 				.action = i,
@@ -655,17 +664,17 @@ debruijn_plugin_definition (void const *service)
 	struct json_object *def = json_tokener_parse(
 		"{\"name\":\"debruijn\",\"title\":\"De Bruijn sequences\","
 		"\"description\":\"Binary de Bruijn sequences of the orders 2 to 6. A sequence of "
-		"order n has 2^n bits and starts with n zero bits. Every value of n bits is in "
-		"the sequence once, also across the end. An output sequence of order n is 0x and "
-		"2^n/4 hexadecimal digits, such as 0x09af for order 4. The sequence 0x3 of order "
-		"2 is the root of a tree. A sequence of order n from 2 to 5 has a child of order "
-		"n+1 for each mask: 2, 8, 128 and 32768 children for the orders 2, 3, 4 and 5. "
-		"The address of a sequence is the masks on the way from the root, such as "
-		"1.7.127.32767. The masks 0 lead to the numerically first sequence of each order "
-		"and the largest masks to the last. The rank of a sequence is the zero-based "
-		"position among the sequences of the same order, sorted as unsigned numbers. A "
-		"call gives the sequence of an action as seq, as addr, or as order and rank. The "
-		"output is the result alone.\","
+		"order n is 2^n bits long and starts with n zero bits. Every value of n bits is "
+		"in the sequence once, also across the end. An output sequence of order n is 0x "
+		"and 2^n/4 hexadecimal digits, such as 0x09af for order 4. The sequence 0x3 of "
+		"order 2 is the root of a tree. A sequence of order n from 2 to 5 is the parent "
+		"of one sequence of order n+1 for each mask: 2, 8, 128 and 32768 children for "
+		"the orders 2, 3, 4 and 5. The address of a sequence is the masks on the way "
+		"from the root, such as 1.7.127.32767. The masks 0 lead to the numerically first "
+		"sequence of each order and the largest masks to the last. The rank of a "
+		"sequence is the zero-based position among the sequences of the same order, "
+		"sorted as unsigned numbers. Pass the sequence of an action as seq, as addr, or "
+		"as order and rank. The output is the result alone.\","
 		"\"inputSchema\":{\"type\":\"object\",\"properties\":{"
 		"\"action\":{\"type\":\"string\",\"enum\":["
 		XL_JOIN(",", ",", DEBRUIJN_PLUGIN_ACTION_LIST(XL_JSON)) "],\"description\":"
@@ -685,19 +694,19 @@ debruijn_plugin_definition (void const *service)
 		"after 0x, such as 0x09af, binary after 0b, octal after 0, else decimal. A "
 		"negative number needs order and stands for the two's complement of the number "
 		"in 2^order bits. seq can be a rotation of a sequence, such as 0x9af0 for "
-		"0x09af: windows reads the rotation as given, and the other actions read the "
-		"sequence.\"},"
+		"0x09af. windows reads the rotation unchanged. The other actions first rotate "
+		"seq to start with the zero bits.\"},"
 		"\"order\":{\"type\":\"integer\",\"minimum\":2,\"maximum\":6,\"description\":"
 		"\"The order: 2 to 5 for expand and children, 3 to 6 for collapse, path and "
 		"address, 2 to 6 for the other actions. With seq, order is optional: a sequence "
-		"of order n in any rotation is 2^n - n to 2^n bits wide, and the bit width of "
-		"seq gives the order.\"},"
+		"of order n in any rotation is 2^n - n to 2^n bits wide, and the default order "
+		"is the smallest n with 2^n at least the bit width of seq.\"},"
 		"\"addr\":{\"type\":\"string\",\"description\":\"The sequence as an address, in "
 		"place of seq: 1 to 4 masks with a dot between two, each a number as for seq. A "
-		"prefix on the first mask gives the base of all masks, as in "
-		"0b1.110.1010101.111110000011111. The masks have 1, 3, 7 and 15 bits, in this "
-		"order. A negative mask stands for the two's complement of the number in the "
-		"bits of the mask, so -1 is the largest mask.\"},"
+		"prefix on the first mask is the base of all masks, as in "
+		"0b1.110.1010101.111110000011111. The masks are 1, 3, 7 and 15 bits wide, in "
+		"this order. A negative mask stands for the two's complement of the number in "
+		"the bits of the mask, so -1 is the largest mask.\"},"
 		"\"rank\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":67108863,\"description\":"
 		"\"The sequence as a rank in order, in place of seq: less than 1, 2, 16, 2048 or "
 		"67108864 for the orders 2 to 6.\"},"
@@ -716,8 +725,8 @@ debruijn_plugin_definition (void const *service)
 }
 
 /* Starts a call of debruijn in @p slot with the arguments @p args: checks
- * the arguments of the action, reads the sequence in the way that the call
- * gives it, and runs the action, which ends the call.
+ * the arguments of the action, reads the sequence from the form of it in
+ * the call, and runs the action, which ends the call.
  */
 static void
 debruijn_plugin_start (struct mcp_slot    *slot,
@@ -759,8 +768,9 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 		               name, debruijn_plugin_arg_names[arg].data);
 		return;
 	}
-	/* seq is the sequence as the call gives it, and normal is seq in the
-	 * rotation that starts with order zero bits, which the library reads. */
+	/* seq is the sequence in the rotation of the argument seq, and normal
+	 * is seq rotated to start with order zero bits, as the library
+	 * requires. */
 	uint64_t seq = 0;
 	uint64_t normal = 0;
 	unsigned order = 0;
@@ -791,7 +801,7 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 		}
 		seq = normal;
 	} else if (needs & A(RANK)) {
-		/* The call gives order, which is an order of the action. */
+		/* The call contains order, which is from low to high of the rule. */
 		unsigned rank;
 		if (debruijn_plugin_upto(slot, of, DEBRUIJN_PLUGIN_ARG_RANK,
 		                         debruijn_word_count(order) - 1U, order, &rank))
@@ -803,15 +813,15 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 		}
 		seq = normal;
 	} else if (needs & A(SEQ)) {
-		/* A sequence of order n has 2^n bits. Without order, the sign bit
-		 * of a negative number is unknown. */
+		/* A sequence of order n is 2^n bits long. Without order, the
+		 * place of the sign bit of a negative number is unknown. */
 		int e;
 		seq = debruijn_plugin_number(jb_view(of[DEBRUIJN_PLUGIN_ARG_SEQ]), 0,
 		                             given ? 1U << order : 0, &e);
 		if (e) {
 			mcp_slot_tell(slot, e == EDOM
-			                    ? CSTR_VIEW("A negative sequence needs the argument order: a "
-			                                "sequence of order n has 2^n bits.")
+			                    ? CSTR_VIEW("A negative seq needs the argument order: a "
+			                                "sequence of order n is 2^n bits long.")
 			                    : CSTR_VIEW("The seq argument must be a string of a 64-bit "
 			                                "number without a + sign: hexadecimal after 0x, "
 			                                "binary after 0b, octal after 0, else decimal."),
@@ -826,7 +836,8 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 			return;
 		}
 	}
-	/* The order of a sequence that the call gives without order. */
+	/* The order was computed from seq or addr, and can be outside the
+	 * orders of the action. */
 	if (!given && (order < rule->low || order > rule->high)) {
 		mcp_slot_tellf(slot, TOOL_FAILED, "0x%0*" PRIx64 " is a sequence of order %u, and %s "
 		               "takes the orders %u to %u.", debruijn_plugin_digits(order), seq, order,
