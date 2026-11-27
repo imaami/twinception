@@ -152,9 +152,10 @@ test_narrow (uint64_t word,
 	}
 	if (order < DEBRUIJN_MAX_ORDER) {
 		unsigned const masks = (1U << ((1U << (order - 1)) - 1U)) - 1U;
+		int e = -1;
 		struct debruijn_wide_generator const generator =
-			debruijn_wide_generator(&seq, order);
-		CHECK(!generator.error);
+			debruijn_wide_generator(&seq, order, &e);
+		CHECK(!e && generator.order == order);
 		for (unsigned k = 0; k < 4; ++k) {
 			unsigned const mask = k == 0 ? 0 : k == 1 ? masks
 			                    : (unsigned)random64() & masks;

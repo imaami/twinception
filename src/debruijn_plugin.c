@@ -832,11 +832,13 @@ debruijn_plugin_children (struct debruijn_plugin_out *out,
 {
 	/* A child of up to order 6 is one limb. */
 	bool const narrow = order < DEBRUIJN_MAX_ORDER;
+	int e = 0;
 	struct debruijn_generator const seed =
 		narrow ? debruijn_generator(seq->limb[0], order) : (struct debruijn_generator){};
 	struct debruijn_wide_generator const wide =
-		narrow ? (struct debruijn_wide_generator){} : debruijn_wide_generator(seq, order);
-	if (seed.error | wide.error) {
+		narrow ? (struct debruijn_wide_generator){}
+		       : debruijn_wide_generator(seq, order, &e);
+	if (seed.error | e) {
 		debruijn_plugin_no_sequence(out->slot, seq, order);
 		return;
 	}

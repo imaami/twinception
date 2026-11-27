@@ -24,8 +24,6 @@ enum {
  * and edge[0] is DEBRUIJN_WIDE_ROOT.
  */
 struct debruijn_wide_tree {
-	uint32_t order;
-	int      error;
 	uint16_t edge[DEBRUIJN_WIDE_VERTICES];
 };
 
@@ -62,48 +60,52 @@ debruijn_wide_over (struct debruijn_wide const *seq,
 }
 
 /* Checks the normalized sequence @p seq of the order @p order, from 2 to
- * 8, and returns the last exit of each nonroot vertex.
+ * 8, and returns the last exit of each nonroot vertex. Stores 0 in @p *e,
+ * or EINVAL for a number that is no normalized sequence of the order. The
+ * tree of such a number is incomplete.
  */
 static struct debruijn_wide_tree
 debruijn_wide_tree (struct debruijn_wide const *seq,
-                    unsigned                    order)
+                    unsigned                    order,
+                    int                        *e)
 {
 	unsigned const length = 1U << order;
+	struct debruijn_wide_tree ret = { .edge = { DEBRUIJN_WIDE_ROOT } };
+	*e = EINVAL;
 	if (debruijn_wide_over(seq, order) || debruijn_wide_window(seq, order, length - order))
-		return (struct debruijn_wide_tree){ .error = EINVAL };
+		return ret;
 
-	struct debruijn_wide_tree ret = { .order = order, .edge = { DEBRUIJN_WIDE_ROOT } };
 	uint64_t seen[DEBRUIJN_WIDE_LIMBS] = {};
 	/* The edge i of the tour is the order bits that start i bits under the
 	 * top bit, with the first of them as the highest bit of the label. */
 	for (unsigned i = 0; i < length; ++i) {
 		unsigned const edge = debruijn_wide_window(seq, order,
 		                                           (length - order - i) & (length - 1U));
-		if (debruijn_wide_test(seen, edge)) {
-			ret.error = EINVAL;
+		if (debruijn_wide_test(seen, edge))
 			return ret;
-		}
 		debruijn_wide_set(seen, edge);
 		if (edge >> 1U)
 			ret.edge[edge >> 1U] = (uint16_t)edge;
 	}
+	*e = 0;
 	return ret;
 }
 
-/* Returns the sequence of the Euler tour that takes the edge of the tree
- * @p src last at each nonroot vertex.
+/* Returns the sequence of the order @p order of the Euler tour that takes
+ * the edge of the tree @p src last at each nonroot vertex.
  */
 static struct debruijn_wide
-debruijn_wide_tree_seq (struct debruijn_wide_tree const *src)
+debruijn_wide_tree_seq (struct debruijn_wide_tree const *src,
+                        unsigned                         order)
 {
-	unsigned const vertices = 1U << (src->order - 1U);
+	unsigned const vertices = 1U << (order - 1U);
 	uint64_t visited[2] = {};
 	struct debruijn_wide seq = {};
 	unsigned vertex = 0;
 	for (unsigned i = 0; i < 2U * vertices; ++i) {
 		/* The first bit of each edge is a bit of the sequence, from the
 		 * top bit down. */
-		if (vertex >> (src->order - 2U))
+		if (vertex >> (order - 2U))
 			debruijn_wide_set(seq.limb, 2U * vertices - 1U - i);
 		bool const again = debruijn_wide_test(visited, vertex);
 		debruijn_wide_set(visited, vertex);
@@ -117,28 +119,32 @@ debruijn_wide_tree_seq (struct debruijn_wide_tree const *src)
 
 /* Lifts the tree of the seed @p src to the next order, with one choice bit
  * of @p choices for each nonroot vertex of the seed. The order of @p src is
- * from 2 to 7.
+ * from 2 to 7. Stores 0 in @p *e, or EINVAL if the edges of @p src are no
+ * last-exit tree, which the constructor never returns. The tree of such a
+ * generator is incomplete.
  */
 static struct debruijn_wide_tree
-debruijn_wide_tree_lift (struct debruijn_wide_generator const *src,
-                         uint64_t                              choices)
+debruijn_wide_generator_lift (struct debruijn_wide_generator const *src,
+                              uint64_t                              choices,
+                              int                                  *e)
 {
 	unsigned const vertices = 1U << (src->order - 1U);
 	struct debruijn_wide_queue queues[DEBRUIJN_WIDE_VERTICES / 2] = {
 		[0] = { .edge = { 0, DEBRUIJN_WIDE_ROOT } }
 	};
 	uint8_t occurrences[DEBRUIJN_WIDE_VERTICES] = { [0] = 1 };
+	struct debruijn_wide_tree ret = { .edge = { DEBRUIJN_WIDE_ROOT } };
 
+	*e = EINVAL;
 	for (unsigned vertex = 1; vertex < vertices; ++vertex) {
 		/* first is the out-edge that ends in 1 for a clear choice bit and
 		 * the one that ends in 0 for a set bit (debruijn.c). */
 		unsigned const choice = (unsigned)(choices >> (vertex - 1U)) & 1U;
 		unsigned const first = vertex << 1U | (choice ^ 1U);
 		unsigned const last = src->edge[vertex];
-		/* The tree edge is an edge out of the vertex, unless the caller
-		 * made the generator without the constructor. */
+		/* The last exit of a vertex is an edge out of the vertex. */
 		if (last >> 1U != vertex)
-			return (struct debruijn_wide_tree){ .error = EINVAL };
+			return ret;
 		queues[vertex] = (struct debruijn_wide_queue){
 			.edge = { (uint16_t)first, (uint16_t)last }
 		};
@@ -153,32 +159,42 @@ debruijn_wide_tree_lift (struct debruijn_wide_generator const *src,
 			debruijn_wide_set(ready, edge);
 	}
 
-	struct debruijn_wide_tree ret = {
-		.order = src->order + 1U,
-		.edge  = { DEBRUIJN_WIDE_ROOT },
-	};
-	for (unsigned i = 0; (ready[0] | ready[1]) && i < 2U * vertices; ++i) {
+	/* The loop needs no check of ready or of a queue. A label is taken
+	 * once, and it reads one entry of the queue of the vertex where it
+	 * ends. Two labels end at each vertex, so no queue is read past its
+	 * two entries. While the root is in its queue, the entries with a
+	 * label that are not read yet are one fewer than the labels that are
+	 * not taken yet. One of those labels is therefore in no queue, and
+	 * ready is not empty. The label that reads the root ends the loop. */
+	for (unsigned taken = 1;; ++taken) {
 		unsigned const edge = debruijn_wide_take(ready);
 		struct debruijn_wide_queue *queue = &queues[edge & (vertices - 1U)];
-		if (queue->used > 1U)
-			break;
 		unsigned const next = queue->edge[queue->used++];
-		if (next == DEBRUIJN_WIDE_ROOT)
+		if (next == DEBRUIJN_WIDE_ROOT) {
+			/* The tree edge of a label leads to the label that it
+			 * read, which is taken later. If all labels were taken,
+			 * their edges are therefore a tree to the last label. If
+			 * some last exits of src are a cycle, their labels never
+			 * leave the queues, and fewer labels were taken. */
+			*e = taken == 2U * vertices ? 0 : EINVAL;
 			return ret;
+		}
 		/* The edges of the seed are the vertices of the next order. */
 		ret.edge[edge] = (uint16_t)(edge << 1U | (next & 1U));
 		if (!--occurrences[next])
 			debruijn_wide_set(ready, next);
 	}
-	return (struct debruijn_wide_tree){ .error = EINVAL };
 }
 
 bool
 debruijn_wide_valid (struct debruijn_wide const *seq,
                      unsigned                    order)
 {
-	return seq && order >= DEBRUIJN_WIDE_MIN_ORDER && order <= DEBRUIJN_WIDE_MAX_ORDER &&
-	       !debruijn_wide_tree(seq, order).error;
+	if (!seq || order < DEBRUIJN_WIDE_MIN_ORDER || order > DEBRUIJN_WIDE_MAX_ORDER)
+		return false;
+	int e;
+	(void)debruijn_wide_tree(seq, order, &e);
+	return !e;
 }
 
 int
@@ -232,14 +248,21 @@ debruijn_wide_normalize (struct debruijn_wide *seq,
 
 struct debruijn_wide_generator
 debruijn_wide_generator (struct debruijn_wide const *seed,
-                         unsigned                    order)
+                         unsigned                    order,
+                         int                        *e)
 {
+	struct debruijn_wide_generator ret = {};
+	if (!e)
+		return ret;
+	*e = seed ? EINVAL : EFAULT;
 	if (!seed || order < DEBRUIJN_WIDE_MIN_ORDER || order >= DEBRUIJN_WIDE_MAX_ORDER)
-		return (struct debruijn_wide_generator){ .error = EINVAL };
+		return ret;
 
-	struct debruijn_wide_tree const input = debruijn_wide_tree(seed, order);
-	struct debruijn_wide_generator ret = { .order = order, .error = input.error };
-	for (unsigned vertex = 0; !ret.error && vertex < 1U << (order - 1U); ++vertex)
+	struct debruijn_wide_tree const input = debruijn_wide_tree(seed, order, e);
+	if (*e)
+		return ret;
+	ret.order = order;
+	for (unsigned vertex = 0; vertex < 1U << (order - 1U); ++vertex)
 		ret.edge[vertex] = input.edge[vertex];
 	return ret;
 }
@@ -251,16 +274,15 @@ debruijn_wide_generate (struct debruijn_wide                 *seq,
 {
 	if (!seq || !src)
 		return EFAULT;
-	if (src->error)
-		return src->error;
 	if (src->order < DEBRUIJN_WIDE_MIN_ORDER || src->order >= DEBRUIJN_WIDE_MAX_ORDER ||
 	    choices >> ((1U << (src->order - 1U)) - 1U))
 		return EINVAL;
 
-	struct debruijn_wide_tree const output = debruijn_wide_tree_lift(src, choices);
-	if (output.error)
-		return output.error;
-	*seq = debruijn_wide_tree_seq(&output);
+	int e;
+	struct debruijn_wide_tree const output = debruijn_wide_generator_lift(src, choices, &e);
+	if (e)
+		return e;
+	*seq = debruijn_wide_tree_seq(&output, src->order + 1U);
 	return 0;
 }
 
@@ -272,8 +294,9 @@ debruijn_wide_expand (struct debruijn_wide       *seq,
 {
 	if (!seq)
 		return EFAULT;
-	struct debruijn_wide_generator const src = debruijn_wide_generator(seed, order);
-	return debruijn_wide_generate(seq, &src, choices);
+	int e;
+	struct debruijn_wide_generator const src = debruijn_wide_generator(seed, order, &e);
+	return e ? e : debruijn_wide_generate(seq, &src, choices);
 }
 
 int
@@ -287,9 +310,10 @@ debruijn_wide_collapse (struct debruijn_wide       *seed,
 	if (order <= DEBRUIJN_WIDE_MIN_ORDER || order > DEBRUIJN_WIDE_MAX_ORDER)
 		return EINVAL;
 
-	struct debruijn_wide_tree const input = debruijn_wide_tree(seq, order);
-	if (input.error)
-		return input.error;
+	int e;
+	struct debruijn_wide_tree const input = debruijn_wide_tree(seq, order, &e);
+	if (e)
+		return e;
 
 	unsigned const vertices = 1U << (order - 1U);
 	uint8_t incoming[DEBRUIJN_WIDE_VERTICES] = {};
@@ -305,11 +329,11 @@ debruijn_wide_collapse (struct debruijn_wide       *seed,
 	struct debruijn_wide_queue queues[DEBRUIJN_WIDE_VERTICES / 2] = {};
 	unsigned const lower = vertices >> 1U;
 	/* The lift in reverse: remove the smallest leaf, and store its parent
-	 * in the queue that the lift took the leaf from. */
+	 * in the queue that the lift took the leaf from. The last exit of a
+	 * vertex leads to a vertex that the tour leaves later, so the last
+	 * exits are a tree, and a tree of the vertices that are left contains
+	 * a leaf: leaves is not empty. */
 	for (unsigned i = 0; i < vertices; ++i) {
-		/* The last exits of a tour are a tree, so one vertex is a leaf. */
-		if (!(leaves[0] | leaves[1]))
-			return EINVAL;
 		unsigned const leaf = debruijn_wide_take(leaves);
 		unsigned parent = DEBRUIJN_WIDE_ROOT;
 		if (leaf) {
@@ -321,14 +345,14 @@ debruijn_wide_collapse (struct debruijn_wide       *seed,
 		queue->edge[queue->used++] = (uint16_t)parent;
 	}
 
-	struct debruijn_wide_tree output = { .order = order - 1U, .edge = { DEBRUIJN_WIDE_ROOT } };
+	struct debruijn_wide_tree output = { .edge = { DEBRUIJN_WIDE_ROOT } };
 	uint64_t recovered = 0;
 	for (unsigned vertex = 1; vertex < lower; ++vertex) {
 		/* The choice bit is set if the first edge of the queue ends in 0. */
 		recovered |= (uint64_t)(~queues[vertex].edge[0] & 1U) << (vertex - 1U);
 		output.edge[vertex] = queues[vertex].edge[1];
 	}
-	*seed = debruijn_wide_tree_seq(&output);
+	*seed = debruijn_wide_tree_seq(&output, order - 1U);
 	*choices = recovered;
 	return 0;
 }

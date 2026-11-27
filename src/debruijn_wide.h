@@ -27,11 +27,11 @@ struct debruijn_wide {
 };
 
 /** A seed of order 2 to 7, prepared once for debruijn_wide_generate().
- *  Make one with debruijn_wide_generator() and do not change it.
+ *  Make one with debruijn_wide_generator() and do not change it. The order
+ *  of a generator that the constructor returned with an error is 0.
  */
 struct debruijn_wide_generator {
 	uint32_t order;
-	int      error;
 	uint16_t edge[1 << (DEBRUIJN_WIDE_MAX_ORDER - 2)];
 };
 
@@ -107,17 +107,24 @@ extern int
 debruijn_wide_normalize (struct debruijn_wide *seq,
                          unsigned              order);
 
-/** Validate a seed of order 2 to 7 and prepare its last-exit tree once. */
+/**
+ * Validate a seed of order 2 to 7 and prepare its last-exit tree once.
+ * Store in *e 0, EFAULT for a null seed, or EINVAL for an invalid order or
+ * seed, unless e is null.
+ */
 extern struct debruijn_wide_generator
 debruijn_wide_generator (struct debruijn_wide const *seed,
-                         unsigned                    order);
+                         unsigned                    order,
+                         int                        *e);
 
 /**
  * Generate the child of a prepared seed for a choice mask. The mask of a
  * seed of order n is 2^(n-1) - 1 bits wide, which is 63 bits for a seed of
- * order 7. Return 0, the error of the constructor, EFAULT for a null
- * pointer, or EINVAL for a mask that is out of range or a generator that
- * the constructor did not make. Leave *seq unchanged on failure.
+ * order 7. Return 0, EFAULT for a null pointer, or EINVAL for a mask that
+ * is out of range or a generator that is the prepared seed of no sequence:
+ * one that the constructor returned with an error, or one with an order or
+ * edges that the constructor never returns. Leave *seq unchanged on
+ * failure.
  */
 extern int
 debruijn_wide_generate (struct debruijn_wide                 *seq,
@@ -127,7 +134,8 @@ debruijn_wide_generate (struct debruijn_wide                 *seq,
 /**
  * Construct the sequence of order 'order' + 1 from a seed of order 'order'
  * and a choice mask: debruijn_wide_generator() and
- * debruijn_wide_generate() in one call. order is from 2 to 7.
+ * debruijn_wide_generate() in one call, with the errors of both. order is
+ * from 2 to 7.
  */
 extern int
 debruijn_wide_expand (struct debruijn_wide       *seq,
