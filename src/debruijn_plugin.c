@@ -877,6 +877,29 @@ debruijn_plugin_children (struct debruijn_plugin_out *out,
 	debruijn_plugin_end(out);
 }
 
+/* The orders of the tool: X(order). windows and cycles are a switch over
+ * the list, with a call of an inline body for each order, as the public
+ * functions of debruijn.c are. The compiler makes a copy of the body for
+ * each order, in which the bits and the limbs of a sequence are constants,
+ * so the copies for the orders 2 to 6 read and write one limb.
+ */
+#define DEBRUIJN_PLUGIN_ORDER_LIST(X) X(2) X(3) X(4) X(5) X(6) X(7) X(8)
+static_assert(DEBRUIJN_MIN_ORDER == 2 && DEBRUIJN_WIDE_MAX_ORDER == 8, "the list of orders");
+
+/* The body of debruijn_plugin_windows() for the order @p order. */
+static force_inline void
+debruijn_plugin_windows_ (struct debruijn_plugin_out *out,
+                          struct debruijn_wide const *seq,
+                          unsigned                    order)
+{
+	/* A copy that the output cannot change, so that the compiler can
+	 * leave its limbs in registers. */
+	struct debruijn_wide const copy = *seq;
+	unsigned const bits = 1U << order;
+	for (unsigned index = 0; index < bits; ++index)
+		debruijn_plugin_line(out, "%u\n", debruijn_wide_window(&copy, order, index));
+}
+
 /* windows: for each bit index of @p seq, from 0, the least significant
  * bit, the value of the @p order bits from the index up
  * (debruijn_wide_window()). The sequence can be in any rotation.
@@ -886,13 +909,47 @@ debruijn_plugin_windows (struct debruijn_plugin_out *out,
                          struct debruijn_wide const *seq,
                          unsigned                    order)
 {
-	/* A copy that the output cannot change, so that the compiler can
-	 * leave its limbs in registers. */
+	switch (order) {
+	#define DEBRUIJN_PLUGIN_CASE(n) case n: debruijn_plugin_windows_(out, seq, n); break;
+	DEBRUIJN_PLUGIN_ORDER_LIST(DEBRUIJN_PLUGIN_CASE)
+	#undef DEBRUIJN_PLUGIN_CASE
+	}
+	debruijn_plugin_end(out);
+}
+
+/* The body of debruijn_plugin_cycles() for the order @p order. */
+static force_inline void
+debruijn_plugin_cycles_ (struct debruijn_plugin_out *out,
+                         struct debruijn_wide const *seq,
+                         unsigned                    order,
+                         unsigned                    rot)
+{
+	/* A copy that the output cannot change, as in windows. */
 	struct debruijn_wide const copy = *seq;
 	unsigned const bits = 1U << order;
-	for (unsigned index = 0; index < bits; ++index)
-		debruijn_plugin_line(out, "%u\n", debruijn_wide_window(&copy, order, index));
-	debruijn_plugin_end(out);
+	/* A set bit of left is an index that is in no cycle yet. */
+	struct debruijn_wide left = debruijn_plugin_ones(bits);
+	for (unsigned limb = 0; limb < (bits + 63U) >> 6U; ) {
+		if (!left.limb[limb]) {
+			++limb;
+			continue;
+		}
+		/* The smallest index that is in no cycle starts a cycle. */
+		unsigned index = limb << 6U | stdc_trailing_zeros(left.limb[limb]);
+		bool more;
+		do {
+			debruijn_wide_clear(left.limb, index);
+			/* The rotation moves the bit index - rot of seq to the bit
+			 * index, modulo bits. */
+			unsigned const next = debruijn_wide_window(&copy, order,
+			                                           (index - rot) & (bits - 1U));
+			/* The cycle is complete if the next index is in a cycle
+			 * already: it is the index where the cycle started. */
+			more = debruijn_wide_test(left.limb, next);
+			debruijn_plugin_line(out, "%u%c", index, more ? ' ' : '\n');
+			index = next;
+		} while (more);
+	}
 }
 
 /* cycles: the cycles of the bit indexes of @p seq after a rotation to the
@@ -910,28 +967,10 @@ debruijn_plugin_cycles (struct debruijn_plugin_out *out,
                         unsigned                    order,
                         unsigned                    rot)
 {
-	/* A copy that the output cannot change, as in windows. */
-	struct debruijn_wide const copy = *seq;
-	unsigned const bits = 1U << order;
-	/* A set bit of read is an index that is in a cycle. */
-	uint64_t read[DEBRUIJN_WIDE_LIMBS] = {};
-	for (unsigned start = 0; start < bits; ++start) {
-		if (debruijn_wide_test(read, start))
-			continue;
-		unsigned index = start;
-		bool more;
-		do {
-			debruijn_wide_set(read, index);
-			/* The rotation moves the bit index - rot of seq to the bit
-			 * index, modulo bits. */
-			unsigned const next = debruijn_wide_window(&copy, order,
-			                                           (index - rot) & (bits - 1U));
-			/* The cycle is complete if the next index is in a cycle
-			 * already: it is the index where the cycle started. */
-			more = !debruijn_wide_test(read, next);
-			debruijn_plugin_line(out, "%u%c", index, more ? ' ' : '\n');
-			index = next;
-		} while (more);
+	switch (order) {
+	#define DEBRUIJN_PLUGIN_CASE(n) case n: debruijn_plugin_cycles_(out, seq, n, rot); break;
+	DEBRUIJN_PLUGIN_ORDER_LIST(DEBRUIJN_PLUGIN_CASE)
+	#undef DEBRUIJN_PLUGIN_CASE
 	}
 	debruijn_plugin_end(out);
 }
