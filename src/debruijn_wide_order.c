@@ -10,8 +10,8 @@
  * edge from the allowed last exits, which changes one row of the matrix.
  * The determinant after the change is the determinant before it times an
  * expression of two entries of the inverse, and the inverse after the
- * change costs one pass over the inverse (the formula of Sherman and
- * Morrison).
+ * change costs one pass over the columns of the inverse that are read
+ * later (the formula of Sherman and Morrison).
  *
  * The inverse of an integer matrix is not an integer matrix, so every
  * number here is a residue modulo the prime p = 2^127 - 1. A count is
@@ -227,46 +227,6 @@ debruijn_wide_counter_without (struct debruijn_wide_counter *counter,
 	return (u128_type)count.hi << 64U | count.lo;
 }
 
-/* Removes the exit @p b of the vertex @p v from the allowed last exits. The
- * count without the exit is not 0.
- */
-static void
-debruijn_wide_counter_remove (struct debruijn_wide_counter *counter,
-                              unsigned                      v,
-                              unsigned                      b)
-{
-	size_t const size = (size_t)counter->size;
-	unsigned const u = (2U * v + b) & (unsigned)size;
-	/* A loop is not in the matrix. */
-	if (u == v)
-		return;
-	struct debruijn_wide_mod const ratio = debruijn_wide_counter_ratio(counter, v, b);
-	struct debruijn_wide_mod const inverse = debruijn_wide_mod_inverse(ratio);
-	struct debruijn_wide_mod *const a = counter->inverse;
-	/* The inverse after the change is the inverse before it plus, in the
-	 * row i and the column j, column[i] times rows[j]: the column of v
-	 * divided by the ratio, and the row of v minus the row of u. */
-	struct debruijn_wide_mod rows[DEBRUIJN_WIDE_VERTICES];
-	struct debruijn_wide_mod column[DEBRUIJN_WIDE_VERTICES];
-	for (size_t j = 0; j < size; ++j) {
-		rows[j] = a[(v - 1U) * size + j];
-		if (u)
-			rows[j] = debruijn_wide_mod_sub(rows[j], a[(u - 1U) * size + j]);
-		column[j] = debruijn_wide_mod_mul(a[j * size + (v - 1U)], inverse);
-	}
-	for (size_t i = 0; i < size; ++i) {
-		if (!(column[i].lo | column[i].hi))
-			continue;
-		struct debruijn_wide_mod *const row = &a[i * size];
-		for (size_t j = 0; j < size; ++j) {
-			struct debruijn_wide_mod const part =
-				debruijn_wide_mod_mul(column[i], rows[j]);
-			row[j] = debruijn_wide_mod_add(row[j], part);
-		}
-	}
-	counter->det = debruijn_wide_mod_mul(counter->det, ratio);
-}
-
 /* allow[b] is a bitmap of the vertices whose exit b can still be their
  * last exit.
  */
@@ -283,6 +243,60 @@ debruijn_wide_exits_open (struct debruijn_wide_exits const *exits,
 {
 	return v && debruijn_wide_test(exits->allow[0], v) &&
 	       debruijn_wide_test(exits->allow[1], v);
+}
+
+/* Removes the exit @p b of the vertex @p v from the allowed last exits. The
+ * count without the exit is not 0. @p exits is the exits after the removal.
+ *
+ * The function changes only the columns of the vertices that the tour has
+ * not left yet. A later call reads no other column: a ratio and a removal
+ * read the column of the vertex that the tour leaves for the first time,
+ * and a removal reads the other columns only to change them. The tour
+ * leaves one more vertex before each removal, so the removals of a tour
+ * change about half of the entries that they would change with all
+ * columns.
+ */
+static void
+debruijn_wide_counter_remove (struct debruijn_wide_counter     *counter,
+                              unsigned                          v,
+                              unsigned                          b,
+                              struct debruijn_wide_exits const *exits)
+{
+	size_t const size = (size_t)counter->size;
+	unsigned const u = (2U * v + b) & (unsigned)size;
+	struct debruijn_wide_mod const ratio = debruijn_wide_counter_ratio(counter, v, b);
+	struct debruijn_wide_mod const inverse = debruijn_wide_mod_inverse(ratio);
+	struct debruijn_wide_mod *const a = counter->inverse;
+	/* The inverse after the change is the inverse before it plus, in the
+	 * row i and the column cols[k], column[i] times rows[k]: the column
+	 * of v divided by the ratio, and the row of v minus the row of u.
+	 * cols is the n columns that the function changes. For a loop, u is
+	 * v, rows is zeros and nothing changes. */
+	struct debruijn_wide_mod rows[DEBRUIJN_WIDE_VERTICES];
+	struct debruijn_wide_mod column[DEBRUIJN_WIDE_VERTICES];
+	uint8_t cols[DEBRUIJN_WIDE_VERTICES];
+	size_t n = 0;
+	for (size_t j = 0; j < size; ++j) {
+		column[j] = debruijn_wide_mod_mul(a[j * size + (v - 1U)], inverse);
+		/* The column j is the column of the vertex j + 1. */
+		if (!debruijn_wide_exits_open(exits, (unsigned)j + 1U))
+			continue;
+		rows[n] = a[(v - 1U) * size + j];
+		if (u)
+			rows[n] = debruijn_wide_mod_sub(rows[n], a[(u - 1U) * size + j]);
+		cols[n++] = (uint8_t)j;
+	}
+	for (size_t i = 0; i < size; ++i) {
+		if (!(column[i].lo | column[i].hi))
+			continue;
+		struct debruijn_wide_mod *const row = &a[i * size];
+		for (size_t k = 0; k < n; ++k) {
+			struct debruijn_wide_mod const part =
+				debruijn_wide_mod_mul(column[i], rows[k]);
+			row[cols[k]] = debruijn_wide_mod_add(row[cols[k]], part);
+		}
+	}
+	counter->det = debruijn_wide_mod_mul(counter->det, ratio);
 }
 
 /* Sets the bit of the step @p i of a tour of the order @p order in @p seq,
@@ -331,8 +345,8 @@ debruijn_wide_rank (struct debruijn_wide       *rank,
 		if (debruijn_wide_exits_open(&exits, v)) {
 			if (b)
 				k += debruijn_wide_counter_without(counter, v, 0);
-			debruijn_wide_counter_remove(counter, v, b);
 			debruijn_wide_clear(exits.allow[b], v);
+			debruijn_wide_counter_remove(counter, v, b, &exits);
 		}
 		v = (v << 1U | b) & (vertices - 1U);
 	}
@@ -417,7 +431,7 @@ debruijn_wide_page_visit (struct debruijn_wide_page  *p,
 				}
 				/* A tour that goes on with a skip counts again. */
 				if (p->skip)
-					debruijn_wide_counter_remove(p->counter, v, b);
+					debruijn_wide_counter_remove(p->counter, v, b, &child);
 				struct debruijn_wide next = seq;
 				debruijn_wide_step(&next, p->order, i, b);
 				unsigned const to = (v << 1U | b) & mask;
