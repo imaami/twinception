@@ -20125,8 +20125,8 @@ def check_debruijn(binary, up, debruijn):
                 schema["properties"]["offset"]["description"] == OFFSET_ABOUT, schema
             # The arguments that each action takes, for the completion of
             # clients, and the plugin refuses every other argument. An
-            # action that takes a sequence has a set for each way to give
-            # the sequence: seq, addr, or order and rank.
+            # action that takes a sequence is in a set for each form of the
+            # sequence: seq, addr, or order and rank.
             def ways(*more):
                 return [["seq", "order", *more, "offset"], ["addr", *more, "offset"],
                         ["order", "rank", *more, "offset"]]
@@ -20173,7 +20173,7 @@ def check_debruijn(binary, up, debruijn):
             assert ok(ai, action="path", seq="0x09af") == "17.09af\n"
             assert ok(ai, action="path", order=6, rank=67108863) == chain
             assert ok(ai, action="address", addr="0x1.7.7f.7fff") == "1.7.127.32767\n"
-            # A call gives the sequence of an action as seq, as addr, or as
+            # The sequence of an action is passed as seq, as addr, or as
             # order and rank, and the output is the same.
             for seq, addr, order, rank in (("0x1d", "1", 3, 1), ("0x09af", "0.0", 4, 0),
                                            ("0x07dcd629", "1.7.127", 5, 2047),
@@ -20310,9 +20310,9 @@ def check_debruijn(binary, up, debruijn):
                 ok(ai, action="path", addr="1.6.85.31775")
             assert ok(ai, action="path", addr="0.-2") == ok(ai, action="path", addr="0.6")
 
-            # Without order, the bit width of seq gives the order. An action
-            # reads a rotation of a sequence as the sequence, and windows
-            # reads the rotation as given.
+            # Without order, the order is computed from the bit width of seq.
+            # An action reads a rotation of a sequence as the sequence, and
+            # windows reads the rotation unchanged.
             def rotations(seq, order):
                 bits, value = 1 << order, int(seq, 16)
                 return [f"0x{(value << r | value >> (bits - r)) & ((1 << bits) - 1):x}"
@@ -20389,11 +20389,13 @@ def check_debruijn(binary, up, debruijn):
                      "0x001fffff is no sequence of order 5."),
                     ({"action": "windows", "seq": "0x1"},
                      "0x1 is no sequence of any order from 2 to 6."),
-                    ({"action": "rank", "seq": "0"}, "0x0 is no sequence of any order from 2 to 6."),
+                    ({"action": "rank", "seq": "0"},
+                     "0x0 is no sequence of any order from 2 to 6."),
                     ({"action": "children", "seq": "17"}, "0x11 is no sequence of order 3."),
                     ({"action": "windows", "seq": "-1"}, negative),
                     ({"action": "rank", "seq": str(signed6)}, negative),
-                    ({"action": "windows", "seq": "-1", "order": 3}, "0xff is no sequence of order 3."),
+                    ({"action": "windows", "seq": "-1", "order": 3},
+                     "0xff is no sequence of order 3."),
                     ({"action": "windows", "seq": "-129", "order": 3},
                      "0xffffffffffffff7f is no sequence of order 3."),
                     ({"action": "windows", "seq": "0xffffffffffffffff"},

@@ -2248,30 +2248,29 @@ among the sequences of that order, sorted as unsigned numbers. So
 `seq:"0x09af"`, `addr:"0.0"` and `order:4, rank:0` are the same sequence.
 `unrank` takes `order` and `rank` only, and `ordered` takes no sequence.
 
-`seq`, and each mask of `addr`, is a number as `strtoll()` reads it
-with the base 0, but without a `+` sign: hexadecimal after `0x`, binary
-after `0b`, octal after `0`, and else decimal. So `0x17`, `0b10111`, `027`
-and `23` are the same sequence, while `17` is `0x11`, and `09af` is not a
-number. A prefix on the leftmost mask of an address is the base of all its
-masks: `0b1.110.1010101.111110000011111` is `1.6.85.31775`, and
-`0x1.7.7f.7fff` is `1.7.127.32767`. A lone `0` has no prefix, so
-`0.1.100.10548` is decimal. Without a prefix on the leftmost mask, each
-mask takes the base from its own prefix.
+`seq`, and each mask of `addr`, is a number as `strtoll()` reads it with the
+base 0, but without a `+` sign: hexadecimal after `0x`, binary after `0b`,
+octal after `0`, and else decimal. So `0x17`, `0b10111`, `027` and `23` are
+the same sequence, while `17` is `0x11`, and `09af` is not a number. A
+prefix on the leftmost mask of an address is the base of all its masks:
+`0b1.110.1010101.111110000011111` is `1.6.85.31775`, and `0x1.7.7f.7fff` is
+`1.7.127.32767`. A lone `0` has no prefix, so `0.1.100.10548` is decimal.
+Without a prefix on the leftmost mask, each mask is read in the base of its
+own prefix.
 
 A negative number stands for the unsigned number with the same bits in the
 width of the sequence or mask: 2^n bits for a sequence of order n, and
 2^(n-1) - 1 bits for a mask that expands a sequence of order n. A negative
-sequence therefore needs `order`, so that its sign bit is known. `-1` is the
+`seq` therefore needs `order`, so that its sign bit is known. `-1` is the
 largest mask, and `-1.-1.-1.-1` is `1.7.127.32767`.
 
 `seq` can be a rotation of a sequence, such as `0x9af0` for `0x09af`. An
 action rotates `seq` to start with its n zero bits before it reads it, and
-`windows` and `cycles` read the rotation unchanged. `order` is optional with
-`seq`.
-Without `order`, the order is computed from the bit width of `seq`: a
-sequence of order n in any rotation is 2^n - n to 2^n bits wide, so 2 to 4
-bits is order 2, 5 to 8 bits order 3, 12 to 16 bits order 4, 27 to 32 bits
-order 5 and 58 to 64 bits order 6.
+`windows` and `cycles` read the rotation unchanged. `order` is optional
+with `seq`. Without `order`, the order is computed from the bit width of
+`seq`: a sequence of order n in any rotation is 2^n - n to 2^n bits wide, so
+2 to 4 bits is order 2, 5 to 8 bits order 3, 12 to 16 bits order 4, 27 to
+32 bits order 5 and 58 to 64 bits order 6.
 
 The output of an action is its result alone, as the output of a calculator:
 
