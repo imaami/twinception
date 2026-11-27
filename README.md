@@ -2283,7 +2283,7 @@ The output of an action is its result alone, as the output of a calculator:
 | `path` | a sequence of order 3 to 6 | the sequences on the way from the root to the sequence, without the root, in hexadecimal without `0x`, such as `1d.0f65.07dcd629.03f79d71b4cb0a89` |
 | `address` | a sequence of order 3 to 6 | the address, such as `1.7.127.32767` |
 | `children` | a sequence of order 2 to 5, `first`, `limit` | the children from the mask `first` on, at most `limit` (64 by default), one on a line |
-| `windows` | a sequence of order 2 to 6 | for each place from the most significant bit, the value of the n bits that start there for order n, one on a line |
+| `windows` | a sequence of order 2 to 6 | for each bit index from 0, the least significant bit, the value of the n bits from the index up for order n, one on a line |
 | `cycles` | a sequence of order 2 to 6, `rot` | the cycles of the bit indexes of the sequence after a rotation to the left by `rot` bits, one cycle on a line, such as `0 15 14 12` |
 | `rank` | a sequence of order 2 to 6 | zero-based rank among *all* normalized sequences of that order, sorted as unsigned integers |
 | `unrank` | `order` 2 to 6, `rank` | the sequence and its dotted decimal mask address, separated by a space; the root is just `0x3` |
@@ -2323,8 +2323,10 @@ and with `rot:1`, which is the rotation `0x135e`, they are
 9
 ```
 
-`windows` counts places from the most significant bit: line p of `windows`,
-counted from 0, is the subsequence at the index 2^n - n - p, modulo 2^n.
+`windows` prints the subsequence at each index from 0, without a rotation.
+Line i of `windows`, counted from 0, is therefore the index that `cycles`
+reads after i with `rot:0`. For `0x09af` the lines are 15, 7, 11, 5, 10, 13,
+6, 3, 9, 4, 2, 1, 0, 8, 12 and 14.
 
 An action refuses an argument that it does not use, and a number that is no
 sequence of its order in any rotation. The definition of the tool lists the

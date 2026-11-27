@@ -26,10 +26,10 @@
  * - address: the address of a sequence, such as 1.7.127.32767.
  * - children: the children of a sequence from the mask first on, at most
  *   limit of them, one on a line.
- * - windows: for each place in a sequence, the value of the order bits that
- *   start there, one on a line.
+ * - windows: for each bit index of a sequence, from the least significant
+ *   bit, the value of the order bits from the index up, one on a line.
  * - cycles: the cycles of the bit indexes of a sequence that was rotated
- *   left by rot bits. The value of the order bits from an index up is the
+ *   left by rot bits. The value that windows prints for an index is the
  *   next index. One cycle on a line, as 0 15 14 12.
  * - rank: the rank of a sequence.
  * - unrank: the sequence at a rank of an order, and its address, as
@@ -570,22 +570,18 @@ debruijn_plugin_window (uint64_t seq,
 	return (unsigned)((seq >> index | seq << ((bits - index) & (bits - 1U))) & (bits - 1U));
 }
 
-/* windows: for each place in @p seq, the value of the @p order bits that
- * start there. The sequence can be in any rotation. The bits after the end
- * of the sequence are the bits at its start.
+/* windows: for each bit index of @p seq, from 0, the least significant
+ * bit, the value of the @p order bits from the index up
+ * (debruijn_plugin_window()). The sequence can be in any rotation.
  */
 static void
 debruijn_plugin_windows (struct debruijn_plugin_out *out,
                          uint64_t                    seq,
                          unsigned                    order)
 {
-	/* Place 0 is the most significant bit, the bit bits - 1. The order
-	 * bits that start at a place end order - 1 bits under it, at the bit
-	 * bits - order - place, modulo bits. */
 	unsigned const bits = 1U << order;
-	for (unsigned place = 0; place < bits; ++place)
-		debruijn_plugin_line(out, "%u\n", debruijn_plugin_window(
-			seq, bits, (bits - order - place) & (bits - 1U)));
+	for (unsigned index = 0; index < bits; ++index)
+		debruijn_plugin_line(out, "%u\n", debruijn_plugin_window(seq, bits, index));
 	debruijn_plugin_end(out);
 }
 
@@ -746,14 +742,14 @@ debruijn_plugin_definition (void const *service)
 		"sequences on the way from the root to the sequence, without the root, in "
 		"hexadecimal without 0x, as 1d.0f65.07dcd629.03f79d71b4cb0a89. address: the "
 		"address of the sequence. children: the children of the sequence from the mask "
-		"first on, at most limit, one on a line. windows: for each place in the sequence "
-		"from the most significant bit, the value of the order bits that start there, "
-		"one on a line. cycles: rotates the sequence left by rot bits. Index 0 is the "
-		"least significant bit, and the subsequence at index i is the value of the bits "
-		"i to i+order-1, bit i the lowest, with bit 0 after the top bit. The subsequence "
-		"at an index is the next index to read. One cycle of indexes on a line, in "
-		"reading order, each cycle from the smallest index in no earlier line. 0x09af "
-		"with rot 0: 0 15 14 12, then 1 7 3 5 13 8 9 4 10 2 11, then 6. "
+		"first on, at most limit, one on a line. windows: the subsequence at each index "
+		"from 0, one on a line. Index 0 is the least significant bit, and the "
+		"subsequence at index i is the value of the bits i to i+order-1, bit i the "
+		"lowest, with bit 0 after the top bit. 0x09af: 15, 7, 11, 5 and so on. cycles: "
+		"rotates the sequence left by rot bits. The subsequence at an index is the next "
+		"index to read. One cycle of indexes on a line, in reading order, each cycle "
+		"from the smallest index in no earlier line. 0x09af with rot 0: 0 15 14 12, "
+		"then 1 7 3 5 13 8 9 4 10 2 11, then 6. "
 		"rank: the rank of the sequence. unrank: the sequence at rank in "
 		"order, a space and the address of the sequence in decimal (the sequence alone "
 		"for order 2). ordered: the same rows in ascending order from rank first on, at "

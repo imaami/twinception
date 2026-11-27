@@ -20222,18 +20222,23 @@ def check_debruijn(binary, up, debruijn):
                     lines[k] + "\n", k
             assert ok(ai, action="children", seq="0x04653adf", order=5, first=31000,
                       limit=1000, offset=7777) == many[7777:]
-            # Each value of order bits is in the sequence once.
+            # windows: for each bit index from 0, the least significant bit,
+            # the value of the order bits from the index up. Each value of
+            # order bits is in the sequence once. The lines of 0x09af are the
+            # output of b24 -q.
             assert ok(ai, action="windows", seq="0x17", order=3) == \
-                "0\n1\n2\n5\n3\n7\n6\n4\n"
+                "7\n3\n5\n2\n1\n0\n4\n6\n"
+            assert ok(ai, action="windows", seq="0x09af").split() == \
+                "15 7 11 5 10 13 6 3 9 4 2 1 0 8 12 14".split()
             values = ok(ai, action="windows", seq="0x0218a392cd3d5dbf", order=6).split()
             assert sorted(map(int, values)) == list(range(64)), values
 
-            # The windows of a sequence in a rotation, read from a string of
-            # the bits: the bits at the start follow the last bit.
+            # The windows of a sequence in a rotation, read from two copies
+            # of the bits: bit 0 follows the top bit.
             def windows(value, order):
                 bits = 1 << order
-                text = f"{value:0{bits}b}" * 2
-                return "".join(f"{int(text[p:p + order], 2)}\n" for p in range(bits))
+                twice = value | value << bits
+                return "".join(f"{twice >> i & (bits - 1)}\n" for i in range(bits))
 
             for value, order in ((0x3, 2), (0x09af, 4), (0x07dcd629, 5),
                                  (0x021d16a7b37e4ae3, 6), (0x03f79d71b4cb0a89, 6)):
@@ -20295,14 +20300,14 @@ def check_debruijn(binary, up, debruijn):
             assert ok(ai, action="cycles", addr="0.0", rot=5) == cycles(0x09af, 4, 5)
             assert ok(ai, action="cycles", addr="1.7.127.32767", rot=63) == \
                 cycles(0x03f79d71b4cb0a89, 6, 63)
-            # Line p of windows is the subsequence at the index
-            # 2^order - order - p, modulo 2^order.
+            # Line i of windows is the index that cycles reads after i with
+            # rot 0.
             for x, order in (("0x09af", 4), ("0xb37e4ae3021d16a7", 6)):
-                bits = 1 << order
-                places = ok(ai, action="windows", seq=x, order=order).split()
-                first = ok(ai, action="cycles", seq=x, order=order, rot=0).splitlines()[0].split()
-                for index, after in zip(first, first[1:] + first[:1]):
-                    assert places[(bits - order - int(index)) % bits] == after, (x, index)
+                jumps = ok(ai, action="windows", seq=x, order=order).split()
+                for line in ok(ai, action="cycles", seq=x, order=order, rot=0).splitlines():
+                    cycle = line.split()
+                    for index, after in zip(cycle, cycle[1:] + cycle[:1]):
+                        assert jumps[int(index)] == after, (x, index)
 
             # A sequence or a mask is a number as strtoll() reads it with the
             # base 0, after white space but without a + sign: hexadecimal
@@ -20345,11 +20350,13 @@ def check_debruijn(binary, up, debruijn):
             for x in rotations("0f65", 4):
                 assert ok(ai, action="expand", seq=x, mask=127) == "0x07dcd629\n", x
                 assert ok(ai, action="collapse", seq=x, order=4) == "0x1d 7\n", x
-            base = "0 1 2 5 3 7 6 4".split()
+            # A rotation to the left by r moves the value at an index to the
+            # index r higher.
+            base = "7 3 5 2 1 0 4 6".split()
             for r, x in enumerate(rotations("17", 3)):
                 assert ok(ai, action="children", seq=x, first=6) == "0x0a7b\n0x0f59\n", x
                 assert ok(ai, action="rank", seq=x) == "0\n", x
-                assert ok(ai, action="windows", seq=x).split() == base[r:] + base[:r], x
+                assert ok(ai, action="windows", seq=x).split() == base[8 - r:] + base[:8 - r], x
             for x in rotations("3", 2):
                 assert ok(ai, action="expand", seq=x, mask=1) == "0x1d\n", x
 
