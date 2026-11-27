@@ -2240,7 +2240,14 @@ of each order and the largest masks to the last: the sequences of the
 address `0.0.0.0` are `17.09af.04653adf.0218a392cd3d5dbf`, and those of
 `1.7.127.32767` are `1d.0f65.07dcd629.03f79d71b4cb0a89`.
 
-A sequence, and each mask of an address, is a number as `strtoll()` reads it
+A call gives the sequence of an action in one of three ways. `seq` is the
+sequence as a number. `addr` is the address of the sequence. `order` and
+`rank` are the rank of the sequence in the order: the zero-based position
+among the sequences of that order, sorted as unsigned numbers. So
+`seq:"0x09af"`, `addr:"0.0"` and `order:4, rank:0` give the same sequence.
+`unrank` takes `order` and `rank` only, and `ordered` takes no sequence.
+
+`seq`, and each mask of `addr`, is a number as `strtoll()` reads it
 with the base 0, but without a `+` sign: hexadecimal after `0x`, binary
 after `0b`, octal after `0`, and else decimal. So `0x17`, `0b10111`, `027`
 and `23` are the same sequence, while `17` is `0x11`, and `09af` is not a
@@ -2256,25 +2263,25 @@ width of the sequence or mask: 2^n bits for a sequence of order n, and
 sequence therefore needs `order`, so that its sign bit is known. `-1` is the
 largest mask, and `-1.-1.-1.-1` is `1.7.127.32767`.
 
-An action also takes a rotation of a sequence, such as `0x9af0` for
-`0x09af`, and rotates it to start with its n zero bits before it reads it;
-`windows` reads the rotation as given. An action that takes `seq` takes
-`order` too, and without `order` the bit width of `seq` gives the order: a
-sequence of order n in any rotation is 2^n - n to 2^n bits wide, so 2 to 4
-bits is order 2, 5 to 8 bits order 3, 12 to 16 bits order 4, 27 to 32 bits
-order 5 and 58 to 64 bits order 6.
+`seq` can be a rotation of a sequence, such as `0x9af0` for `0x09af`. An
+action rotates it to start with its n zero bits before it reads it;
+`windows` reads the rotation as given. `order` is optional with `seq`, and
+without `order` the bit width of `seq` gives the order: a sequence of order
+n in any rotation is 2^n - n to 2^n bits wide, so 2 to 4 bits is order 2,
+5 to 8 bits order 3, 12 to 16 bits order 4, 27 to 32 bits order 5 and 58 to
+64 bits order 6.
 
 The output of an action is its result alone, as the output of a calculator:
 
 | Action | Arguments | Output |
 | ------ | --------- | ------ |
-| `expand` | `seq` of order 2 to 5, `mask` | the child, such as `0x07dcd629` |
-| `collapse` | `seq` of order 3 to 6 | the parent and the mask of the sequence in the parent, such as `0x0f65 127` |
-| `path` | `addr` | the sequences of the address without the root, in hexadecimal without `0x`, such as `1d.0f65.07dcd629.03f79d71b4cb0a89` |
-| `address` | `seq` of order 3 to 6 | the address, such as `1.7.127.32767` |
-| `children` | `seq` of order 2 to 5, `first`, `limit` | the children from the mask `first` on, at most `limit` (64 by default), one on a line |
-| `windows` | `seq` of order 2 to 6 | for each place from the most significant bit, the value of the n bits that start there for order n, one on a line |
-| `rank` | either `seq` of order 2 to 6, or `addr` alone | zero-based rank among *all* normalized sequences of that order, sorted as unsigned integers |
+| `expand` | a sequence of order 2 to 5, `mask` | the child, such as `0x07dcd629` |
+| `collapse` | a sequence of order 3 to 6 | the parent and the mask of the sequence in the parent, such as `0x0f65 127` |
+| `path` | a sequence of order 3 to 6 | the sequences on the way from the root to the sequence, without the root, in hexadecimal without `0x`, such as `1d.0f65.07dcd629.03f79d71b4cb0a89` |
+| `address` | a sequence of order 3 to 6 | the address, such as `1.7.127.32767` |
+| `children` | a sequence of order 2 to 5, `first`, `limit` | the children from the mask `first` on, at most `limit` (64 by default), one on a line |
+| `windows` | a sequence of order 2 to 6 | for each place from the most significant bit, the value of the n bits that start there for order n, one on a line |
+| `rank` | a sequence of order 2 to 6 | zero-based rank among *all* normalized sequences of that order, sorted as unsigned integers |
 | `unrank` | `order` 2 to 6, `rank` | the sequence and its dotted decimal mask address, separated by a space; the root is just `0x3` |
 | `ordered` | `order` 2 to 6, optional `first` and `limit` | consecutive `unrank` rows from rank `first` (default 0), at most `limit` (1 to 256, default 64) |
 
@@ -2288,8 +2295,8 @@ It seeks by counting whole prefix blocks, not by visiting earlier sequences.
 
 An action refuses an argument that it does not use, and a number that is no
 sequence of its order in any rotation. The definition of the tool lists the
-arguments of each action in `_meta.askai.takes`: for `rank`, either `seq`
-and `order`, or `addr`.
+arguments of each action in `_meta.askai.takes`, with a set for each way to
+give the sequence of the action.
 
 ## Limits
 

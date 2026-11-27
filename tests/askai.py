@@ -20124,16 +20124,22 @@ def check_debruijn(binary, up, debruijn):
                 schema["required"] == ["action"] and \
                 schema["properties"]["offset"]["description"] == OFFSET_ABOUT, schema
             # The arguments that each action takes, for the completion of
-            # clients, and the plugin refuses every other argument.
+            # clients, and the plugin refuses every other argument. An
+            # action that takes a sequence has a set for each way to give
+            # the sequence: seq, addr, or order and rank.
+            def ways(*more):
+                return [["seq", "order", *more, "offset"], ["addr", *more, "offset"],
+                        ["order", "rank", *more, "offset"]]
+
             takes = tools[1]["_meta"]["askai"]["takes"]
             assert takes == {
-                "expand": [["seq", "order", "mask", "offset"]],
-                "collapse": [["seq", "order", "offset"]],
-                "path": [["addr", "offset"]],
-                "address": [["seq", "order", "offset"]],
-                "children": [["seq", "order", "first", "limit", "offset"]],
-                "windows": [["seq", "order", "offset"]],
-                "rank": [["seq", "order", "offset"], ["addr", "offset"]],
+                "expand": ways("mask"),
+                "collapse": ways(),
+                "path": ways(),
+                "address": ways(),
+                "children": ways("first", "limit"),
+                "windows": ways(),
+                "rank": ways(),
                 "unrank": [["order", "rank", "offset"]],
                 "ordered": [["order", "first", "limit", "offset"]]}, takes
             for action, sets in takes.items():
@@ -20163,6 +20169,25 @@ def check_debruijn(binary, up, debruijn):
             assert ok(ai, action="address", seq="0x03f79d71b4cb0a89", order=6) == \
                 "1.7.127.32767\n"
             assert ok(ai, action="address", seq="0x17", order=3) == "0\n"
+            assert ok(ai, action="path", seq="0x09af") == "17.09af\n"
+            assert ok(ai, action="path", order=6, rank=67108863) == chain
+            assert ok(ai, action="address", addr="0x1.7.7f.7fff") == "1.7.127.32767\n"
+            # A call gives the sequence of an action as seq, as addr, or as
+            # order and rank, and the output is the same.
+            for seq, addr, order, rank in (("0x1d", "1", 3, 1), ("0x09af", "0.0", 4, 0),
+                                           ("0x07dcd629", "1.7.127", 5, 2047),
+                                           ("0x021d16a7b37e4ae3", "0.1.100.10548", 6, 1234567)):
+                for action, more in (("expand", {"mask": 1}), ("collapse", {}), ("path", {}),
+                                     ("address", {}), ("children", {"first": 1, "limit": 3}),
+                                     ("windows", {}), ("rank", {})):
+                    if order == 6 and action in ("expand", "children"):
+                        continue
+                    one = ok(ai, action=action, seq=seq, **more)
+                    assert one and ok(ai, action=action, seq=seq, order=order, **more) == one and \
+                        ok(ai, action=action, addr=addr, **more) == one and \
+                        ok(ai, action=action, order=order, rank=rank, **more) == one, (action, seq)
+                assert ok(ai, action="rank", addr=addr) == f"{rank}\n"
+                assert ok(ai, action="unrank", order=order, rank=rank) == f"{seq} {addr}\n"
             # The children of a sequence, one on a line, from the mask first on.
             assert ok(ai, action="children", seq="0x3", order=2) == "0x17\n0x1d\n"
             assert ok(ai, action="children", seq="0x17", order=3) == \
@@ -20303,6 +20328,29 @@ def check_debruijn(binary, up, debruijn):
                     ({"action": "expand", "seq": "0x17", "mask": 8},
                      "The mask argument must be a whole number from 0 to 7 for order 3."),
                     ({"action": "ordered"}, "ordered needs the argument order."),
+                    ({"action": "windows"}, "windows needs the argument seq."),
+                    ({"action": "windows", "order": 3}, "windows needs the argument seq."),
+                    ({"action": "windows", "rank": 0}, "windows needs the argument order."),
+                    ({"action": "windows", "seq": "0x17", "addr": "0"},
+                     "windows takes no argument seq."),
+                    ({"action": "windows", "seq": "0x17", "order": 3, "rank": 0},
+                     "windows takes no argument seq."),
+                    ({"action": "windows", "addr": "0", "order": 3},
+                     "windows takes no argument order."),
+                    ({"action": "windows", "addr": "0", "rank": 0},
+                     "windows takes no argument rank."),
+                    ({"action": "windows", "order": 3, "rank": 2},
+                     "rank must be an integer from 0 to 1 for order 3."),
+                    ({"action": "collapse", "order": 2, "rank": 0},
+                     "The order argument must be a whole number from 3 to 6 for collapse."),
+                    ({"action": "expand", "addr": "1.7.127.32767", "mask": 0},
+                     "0x03f79d71b4cb0a89 is a sequence of order 6, and expand takes the orders "
+                     "2 to 5."),
+                    ({"action": "path", "seq": "0x3"},
+                     "0x3 is a sequence of order 2, and path takes the orders 3 to 6."),
+                    ({"action": "unrank", "seq": "0x17"}, "unrank takes no argument seq."),
+                    ({"action": "unrank", "addr": "0", "order": 3, "rank": 0},
+                     "unrank takes no argument addr."),
                     ({"action": "rank", "addr": "1.8"}, None),
                     ({"action": "rank", "addr": "1", "order": 3}, "rank takes no argument order."),
                     ({"action": "unrank", "order": 2, "rank": 1},
@@ -20373,7 +20421,8 @@ def check_debruijn(binary, up, debruijn):
                 got = refused(ai, **arguments)
                 assert got == text if text else got.startswith("The addr argument"), \
                     (arguments, got)
-    print("debruijn: mask tree, windows, numeric rank, unrank and ordered pages; the "
+    print("debruijn: mask tree, windows, numeric rank, unrank and ordered pages; a "
+          "sequence as seq, as addr and as order and rank; the "
           "order from the width, rotated sequences; numbers in each base, negative "
           "numbers, the base of an address from its first mask; refused sequences, orders, "
           "ranks, masks, addresses and arguments: PASS")
