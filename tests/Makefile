@@ -4,11 +4,11 @@ include $(TEST_DIR)../mk/o.mk
 $(call set-build-dir,$(TEST_DIR)../build)
 
 .PHONY: default check check-ai check-askai check-buf check-build check-cdb check-chatgpt check-cli check-completion \
-        check-cstr-view check-datauri check-dstr check-git-run check-jb check-handle check-instance check-journal check-ledger check-load \
+        check-cstr-view check-datauri check-debruijn check-dstr check-git-run check-jb check-handle check-instance check-journal check-ledger check-load \
         check-evidence check-finding check-graph check-member check-ref check-seen check-store check-turn load load-build
 default:; @:
 check: | check-completion check-askai check-cli check-ai check-chatgpt check-jb check-cdb check-buf check-build \
-         check-datauri check-handle check-turn check-instance check-git-run check-journal check-ledger \
+         check-datauri check-debruijn check-handle check-turn check-instance check-git-run check-journal check-ledger \
          check-evidence check-finding check-graph check-member check-ref check-seen check-store check-dstr \
          check-load
 
@@ -271,6 +271,12 @@ check-ledger: $Otests/ledger
 check-ref: $Otests/ref
 	$<
 
+# Unit tests of the de Bruijn sequences of up to 256 bits,
+# src/debruijn_wide.c and src/debruijn_wide_order.c, against src/debruijn.c
+# and src/debruijn_order.c for the orders that both have.
+check-debruijn: $Otests/debruijn
+	$<
+
 check-journal: $Otests/journal
 	@directory=$$(mktemp -d) || exit 1; \
 	trap 'rm -rf "$$directory"' EXIT; \
@@ -337,10 +343,12 @@ $(addprefix $Otests/,cli_input cli_state cli_ui git_run journal member store): \
 
 # The unit tests. Each test links the object of its own source and the
 # objects of the files of src/ that the lines below list.
-override UNIT := buf datauri graph handle instance ledger ref turn
+override UNIT := buf datauri debruijn graph handle instance ledger ref turn
 
 $Otests/buf: $Otests/src/buf.c.o
 $Otests/datauri: $Otests/src/datauri.c.o
+$Otests/debruijn: $(addprefix $Otests/src/,debruijn.c.o debruijn_order.c.o debruijn_wide.c.o \
+                                           debruijn_wide_order.c.o)
 $Otests/graph: $Otests/src/graph.c.o $Otests/src/buf.c.o
 $Otests/handle $Otests/instance $Otests/ledger $Otests/turn: $Otests/src/log.c.o
 $Otests/ledger: $Otests/src/dstr.c.o
