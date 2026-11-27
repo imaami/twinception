@@ -28,6 +28,9 @@
  *   limit of them, one on a line.
  * - windows: for each place in a sequence, the value of the order bits that
  *   start there, one on a line.
+ * - cycles: the cycles of the bit indexes of a sequence that was rotated
+ *   left by rot bits. The value of the order bits from an index up is the
+ *   next index. One cycle on a line, as 0 15 14 12.
  * - rank: the rank of a sequence.
  * - unrank: the sequence at a rank of an order, and its address, as
  *   0x021d16a7b37e4ae3 0.1.100.10548.
@@ -51,9 +54,9 @@
  *
  * seq can be a sequence in any rotation. An action rotates seq to start
  * with its n zero bits (debruijn_normalize()) before the library reads it,
- * and windows reads seq without that rotation. Without the argument order,
- * the order is computed from the bit width of seq: a rotation of a
- * sequence of order n is 2^n - n to 2^n bits wide.
+ * and windows and cycles read seq without that rotation. Without the
+ * argument order, the order is computed from the bit width of seq: a
+ * rotation of a sequence of order n is 2^n - n to 2^n bits wide.
  *
  * The plugin defines no options, creates no instances and stores no data,
  * and a call ends before its start() returns. check_debruijn
@@ -92,6 +95,7 @@ enum {
         X(ADDR,   "addr")           \
         X(RANK,   "rank")           \
         X(MASK,   "mask")           \
+        X(ROT,    "rot")            \
         X(FIRST,  "first")          \
         X(LIMIT,  "limit")          \
         X(OFFSET, "offset")
@@ -128,6 +132,7 @@ static struct cstr_view const debruijn_plugin_arg_names[] = {
         X(ADDRESS,  "address",  A(SEQ),             3, 6, 0)       \
         X(CHILDREN, "children", A(SEQ),             2, 5, 32768)   \
         X(WINDOWS,  "windows",  A(SEQ),             2, 6, 0)       \
+        X(CYCLES,   "cycles",   A(SEQ) | A(ROT),    2, 6, 0)       \
         X(RANK,     "rank",     A(SEQ),             2, 6, 0)       \
         X(UNRANK,   "unrank",   A(ORDER) | A(RANK), 2, 6, 0)       \
         X(ORDERED,  "ordered",  A(ORDER),           2, 6, 256)
@@ -569,6 +574,43 @@ debruijn_plugin_windows (struct debruijn_plugin_out *out,
 	debruijn_plugin_end(out);
 }
 
+/* cycles: the cycles of the bit indexes of @p seq after a rotation to the
+ * left by @p rot bits. Index 0 is the least significant bit. The value of
+ * the @p order bits from an index up (debruijn_plugin_window()) is the
+ * index to read next. Each value of order bits is in the sequence at
+ * exactly one index, so the reading returns to the index where it started,
+ * and each index is in exactly one cycle. A line of the output is a cycle:
+ * the indexes in the order of the reading, from the smallest index that is
+ * in no line before it.
+ */
+static void
+debruijn_plugin_cycles (struct debruijn_plugin_out *out,
+                        uint64_t                    seq,
+                        unsigned                    order,
+                        unsigned                    rot)
+{
+	unsigned const bits = 1U << order;
+	/* A set bit of left is an index that is in no cycle yet. */
+	uint64_t left = UINT64_MAX >> (64U - bits);
+	while (left) {
+		unsigned index = stdc_trailing_zeros(left);
+		bool more;
+		do {
+			left &= ~(UINT64_C(1) << index);
+			/* The rotation moves the bit index - rot of seq to the bit
+			 * index, modulo bits. */
+			unsigned const next = debruijn_plugin_window(seq, bits,
+			                                             (index - rot) & (bits - 1U));
+			/* The cycle is complete if the next index is in a cycle
+			 * already: it is the index where the cycle started. */
+			more = left >> next & 1U;
+			debruijn_plugin_line(out, "%u%c", index, more ? ' ' : '\n');
+			index = next;
+		} while (more);
+	}
+	debruijn_plugin_end(out);
+}
+
 /* Stores the JSON integer @p val in @p *n and returns 0 if it is from 0 to
  * @p max. Otherwise returns EINVAL and leaves @p *n unchanged.
  */
@@ -675,7 +717,12 @@ debruijn_plugin_definition (void const *service)
 		"sequence is the zero-based position among the sequences of the same order, "
 		"sorted as unsigned numbers. Pass the sequence of an action as seq, as addr, or "
 		"as order and rank. The output is the result alone.\","
-		"\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+		"\"annotations\":{\"readOnlyHint\":true,\"openWorldHint\":false}}");
+	/* The schema is a string literal of its own. The translation limits of
+	 * C require a compiler to accept a literal of 4095 bytes and no more,
+	 * and -Wpedantic warns of a longer one. */
+	def = jb_set_or_free(def, "inputSchema", json_tokener_parse(
+		"{\"type\":\"object\",\"properties\":{"
 		"\"action\":{\"type\":\"string\",\"enum\":["
 		XL_JOIN(",", ",", DEBRUIJN_PLUGIN_ACTION_LIST(XL_JSON)) "],\"description\":"
 		"\"expand: the child of the sequence for mask. collapse: the parent of the "
@@ -685,7 +732,13 @@ debruijn_plugin_definition (void const *service)
 		"address of the sequence. children: the children of the sequence from the mask "
 		"first on, at most limit, one on a line. windows: for each place in the sequence "
 		"from the most significant bit, the value of the order bits that start there, "
-		"one on a line. rank: the rank of the sequence. unrank: the sequence at rank in "
+		"one on a line. cycles: rotates the sequence left by rot bits. Index 0 is the "
+		"least significant bit, and the subsequence at index i is the value of the bits "
+		"i to i+order-1, bit i the lowest, with bit 0 after the top bit. The subsequence "
+		"at an index is the next index to read. One cycle of indexes on a line, in "
+		"reading order, each cycle from the smallest index in no earlier line. 0x09af "
+		"with rot 0: 0 15 14 12, then 1 7 3 5 13 8 9 4 10 2 11, then 6. "
+		"rank: the rank of the sequence. unrank: the sequence at rank in "
 		"order, a space and the address of the sequence in decimal (the sequence alone "
 		"for order 2). ordered: the same rows in ascending order from rank first on, at "
 		"most limit rows.\"},"
@@ -694,8 +747,8 @@ debruijn_plugin_definition (void const *service)
 		"after 0x, such as 0x09af, binary after 0b, octal after 0, else decimal. A "
 		"negative number needs order and stands for the two's complement of the number "
 		"in 2^order bits. seq can be a rotation of a sequence, such as 0x9af0 for "
-		"0x09af. windows reads the rotation unchanged. The other actions first rotate "
-		"seq to start with the zero bits.\"},"
+		"0x09af. windows and cycles read the rotation unchanged. The other actions first "
+		"rotate seq to start with the zero bits.\"},"
 		"\"order\":{\"type\":\"integer\",\"minimum\":2,\"maximum\":6,\"description\":"
 		"\"The order: 2 to 5 for expand and children, 3 to 6 for collapse, path and "
 		"address, 2 to 6 for the other actions. With seq, order is optional: a sequence "
@@ -712,14 +765,16 @@ debruijn_plugin_definition (void const *service)
 		"67108864 for the orders 2 to 6.\"},"
 		"\"mask\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"For expand: "
 		"at most 1, 7, 127 and 32767 for the orders 2, 3, 4 and 5.\"},"
+		"\"rot\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":63,\"description\":"
+		"\"For cycles: the number of bits to rotate the sequence left, from 0 to "
+		"2^order - 1.\"},"
 		"\"first\":{\"type\":\"integer\",\"minimum\":0,\"default\":0,\"description\":"
 		"\"For children: the first mask. For ordered: the first rank (empty past end).\"},"
 		"\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":32768,\"default\":64,"
 		"\"description\":\"Maximum rows: up to 32768 for children or 256 for ordered.\"},"
 		"\"offset\":{\"type\":\"integer\",\"minimum\":0,\"description\":\""
 		TOOL_OFFSET_ABOUT "\"}},"
-		"\"required\":[\"action\"],\"additionalProperties\":false},"
-		"\"annotations\":{\"readOnlyHint\":true,\"openWorldHint\":false}}");
+		"\"required\":[\"action\"],\"additionalProperties\":false}"));
 	struct json_object *meta = jb_set_or_free(json_object_new_object(), "takes", takes);
 	return jb_set_or_free(def, "_meta", jb_set_or_free(json_object_new_object(), "askai", meta));
 }
@@ -775,6 +830,7 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 	uint64_t normal = 0;
 	unsigned order = 0;
 	unsigned mask = 0;
+	unsigned rot = 0;
 	unsigned first = 0;
 	unsigned limit = DEBRUIJN_PLUGIN_LIMIT;
 	bool const given = seen & A(ORDER);
@@ -847,6 +903,9 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 	if ((needs & A(MASK)) && debruijn_plugin_upto(slot, of, DEBRUIJN_PLUGIN_ARG_MASK,
 	                                              debruijn_plugin_masks(order), order, &mask))
 		return;
+	if ((needs & A(ROT)) && debruijn_plugin_upto(slot, of, DEBRUIJN_PLUGIN_ARG_ROT,
+	                                             (1U << order) - 1U, order, &rot))
+		return;
 	if (((seen & A(FIRST)) && debruijn_plugin_uint(of[DEBRUIJN_PLUGIN_ARG_FIRST], UINT32_MAX,
 	                                               &first)) ||
 	    ((seen & A(LIMIT)) && (debruijn_plugin_uint(of[DEBRUIJN_PLUGIN_ARG_LIMIT], rule->cap,
@@ -879,6 +938,9 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 		break;
 	case DEBRUIJN_PLUGIN_WINDOWS:
 		debruijn_plugin_windows(&out, seq, order);
+		break;
+	case DEBRUIJN_PLUGIN_CYCLES:
+		debruijn_plugin_cycles(&out, seq, order, rot);
 		break;
 	case DEBRUIJN_PLUGIN_RANK:
 		debruijn_plugin_rank(&out, normal, order);

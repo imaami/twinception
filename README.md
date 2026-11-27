@@ -2266,7 +2266,8 @@ largest mask, and `-1.-1.-1.-1` is `1.7.127.32767`.
 
 `seq` can be a rotation of a sequence, such as `0x9af0` for `0x09af`. An
 action rotates `seq` to start with its n zero bits before it reads it, and
-`windows` reads the rotation unchanged. `order` is optional with `seq`.
+`windows` and `cycles` read the rotation unchanged. `order` is optional with
+`seq`.
 Without `order`, the order is computed from the bit width of `seq`: a
 sequence of order n in any rotation is 2^n - n to 2^n bits wide, so 2 to 4
 bits is order 2, 5 to 8 bits order 3, 12 to 16 bits order 4, 27 to 32 bits
@@ -2282,6 +2283,7 @@ The output of an action is its result alone, as the output of a calculator:
 | `address` | a sequence of order 3 to 6 | the address, such as `1.7.127.32767` |
 | `children` | a sequence of order 2 to 5, `first`, `limit` | the children from the mask `first` on, at most `limit` (64 by default), one on a line |
 | `windows` | a sequence of order 2 to 6 | for each place from the most significant bit, the value of the n bits that start there for order n, one on a line |
+| `cycles` | a sequence of order 2 to 6, `rot` | the cycles of the bit indexes of the sequence after a rotation to the left by `rot` bits, one cycle on a line, such as `0 15 14 12` |
 | `rank` | a sequence of order 2 to 6 | zero-based rank among *all* normalized sequences of that order, sorted as unsigned integers |
 | `unrank` | `order` 2 to 6, `rank` | the sequence and its dotted decimal mask address, separated by a space; the root is just `0x3` |
 | `ordered` | `order` 2 to 6, optional `first` and `limit` | consecutive `unrank` rows from rank `first` (default 0), at most `limit` (1 to 256, default 64) |
@@ -2293,6 +2295,34 @@ returns `1234567`. The orders 2 through 6 contain 1, 2, 16, 2048 and
 `ordered` stops at the end and returns no rows for `first` past the last rank.
 It seeks by counting whole prefix blocks, not by visiting earlier sequences.
 `children` still enumerates a single parent's children in *mask* order.
+
+`cycles` rotates the sequence left by `rot` bits, from 0 to 2^n - 1, and
+reads the result by bit index. Index 0 is the least significant bit. The
+subsequence at index i is the value of the n bits from bit i up, with bit i
+as the lowest bit of the value and bit 0 after the top bit. The subsequence
+at an index is the next index to read. Every value of n bits is in the
+sequence once, so each index is in exactly one cycle. A line of the output
+is one cycle, as the indexes in reading order, and each cycle starts at the
+smallest index that no earlier line lists. The cycles of the sequence
+`0x09af` with `rot:0` are
+
+```
+0 15 14 12
+1 7 3 5 13 8 9 4 10 2 11
+6
+```
+
+and with `rot:1`, which is the rotation `0x135e`, they are
+
+```
+0 14 8 3 11 2 7 6 13
+1 15 12
+4 5 10
+9
+```
+
+`windows` counts places from the most significant bit: line p of `windows`,
+counted from 0, is the subsequence at the index 2^n - n - p, modulo 2^n.
 
 An action refuses an argument that it does not use, and a number that is no
 sequence of its order in any rotation. The definition of the tool lists the

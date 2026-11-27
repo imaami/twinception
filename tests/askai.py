@@ -20120,7 +20120,7 @@ def check_debruijn(binary, up, debruijn):
             schema = tools[1]["inputSchema"]
             assert schema["properties"]["action"]["enum"] == \
                 ["expand", "collapse", "path", "address", "children", "windows",
-                 "rank", "unrank", "ordered"] and \
+                 "cycles", "rank", "unrank", "ordered"] and \
                 schema["required"] == ["action"] and \
                 schema["properties"]["offset"]["description"] == OFFSET_ABOUT, schema
             # The arguments that each action takes, for the completion of
@@ -20139,6 +20139,7 @@ def check_debruijn(binary, up, debruijn):
                 "address": ways(),
                 "children": ways("first", "limit"),
                 "windows": ways(),
+                "cycles": ways("rot"),
                 "rank": ways(),
                 "unrank": [["order", "rank", "offset"]],
                 "ordered": [["order", "first", "limit", "offset"]]}, takes
@@ -20223,6 +20224,68 @@ def check_debruijn(binary, up, debruijn):
                     turned = (value << r | value >> (bits - r)) & ((1 << bits) - 1)
                     assert ok(ai, action="windows", seq=hex(turned), order=order) == \
                         windows(turned, order), hex(turned)
+            # cycles: rot rotates the sequence left. The value of the order
+            # bits from a bit index up, the bit at the index the lowest, is
+            # the next index, and the bit after the top bit is bit 0. A line
+            # is a cycle from the smallest index that is in no line before.
+            # The three outputs for 0x09af are those of the program b24.
+            def cycles(value, order, rot):
+                bits = 1 << order
+                value = (value << rot | value >> (bits - rot)) & ((1 << bits) - 1)
+                jump = [(value | value << bits) >> i & (bits - 1) for i in range(bits)]
+                left, lines = set(range(bits)), []
+                while left:
+                    i, line = min(left), []
+                    while i in left:
+                        left.remove(i)
+                        line.append(str(i))
+                        i = jump[i]
+                    lines.append(" ".join(line) + "\n")
+                return "".join(lines)
+
+            assert ok(ai, action="cycles", seq="0x09af", rot=0) == \
+                "0 15 14 12\n1 7 3 5 13 8 9 4 10 2 11\n6\n"
+            assert ok(ai, action="cycles", seq="0x09af", rot=1) == \
+                "0 14 8 3 11 2 7 6 13\n1 15 12\n4 5 10\n9\n"
+            assert ok(ai, action="cycles", seq="0x09af", rot=5) == \
+                "0 1\n2 8 5 15\n3 12\n4 14\n6 7 11\n9 10 13\n"
+            assert ok(ai, action="cycles", seq="0x3", rot=0) == "0 3 2\n1\n"
+            # Each sequence of order 4 in each rotation, by rank.
+            fours = [int(row.split()[0], 16) for row in
+                     ok(ai, action="ordered", order=4).splitlines()]
+            assert len(fours) == 16 and fours[0] == 0x09af, fours
+            for rank, value in enumerate(fours):
+                for rot in range(16):
+                    assert ok(ai, action="cycles", order=4, rank=rank, rot=rot) == \
+                        cycles(value, 4, rot), (hex(value), rot)
+            # The other orders, also at the largest rot, and each index is
+            # in one cycle.
+            for value, order in ((0x3, 2), (0x17, 3), (0x1d, 3), (0x04653adf, 5),
+                                 (0x07dcd629, 5), (0x0218a392cd3d5dbf, 6),
+                                 (0x021d16a7b37e4ae3, 6), (0x03f79d71b4cb0a89, 6)):
+                bits = 1 << order
+                for rot in (0, 1, order, bits // 2, bits - 1):
+                    got = ok(ai, action="cycles", seq=hex(value), order=order, rot=rot)
+                    assert got == cycles(value, order, rot) and \
+                        sorted(map(int, got.split())) == list(range(bits)), (hex(value), rot)
+            # cycles reads a rotation of a sequence unchanged: seq rotated
+            # left by r with rot 0 is the sequence with rot r. addr, and
+            # order with rank, are the sequence that starts with zero bits.
+            for r, x in enumerate(f"0x{(0x09af << r | 0x09af >> (16 - r)) & 0xffff:x}"
+                                  for r in range(16)):
+                assert ok(ai, action="cycles", seq=x, rot=0) == cycles(0x09af, 4, r), x
+            assert ok(ai, action="cycles", addr="0.0", rot=5) == cycles(0x09af, 4, 5)
+            assert ok(ai, action="cycles", addr="1.7.127.32767", rot=63) == \
+                cycles(0x03f79d71b4cb0a89, 6, 63)
+            # Line p of windows is the subsequence at the index
+            # 2^order - order - p, modulo 2^order.
+            for x, order in (("0x09af", 4), ("0xb37e4ae3021d16a7", 6)):
+                bits = 1 << order
+                places = ok(ai, action="windows", seq=x, order=order).split()
+                first = ok(ai, action="cycles", seq=x, order=order, rot=0).splitlines()[0].split()
+                for index, after in zip(first, first[1:] + first[:1]):
+                    assert places[(bits - order - int(index)) % bits] == after, (x, index)
+
             # A sequence or a mask is a number as strtoll() reads it with the
             # base 0, after white space but without a + sign: hexadecimal
             # after 0x, binary after 0b, octal after 0, else decimal. A
@@ -20364,6 +20427,21 @@ def check_debruijn(binary, up, debruijn):
                     ({"action": "path", "seq": "0x3"},
                      "0x3 is a sequence of order 2, and path takes the orders 3 to 6."),
                     ({"action": "unrank", "seq": "0x17"}, "unrank takes no argument seq."),
+                    ({"action": "cycles", "seq": "0x09af"}, "cycles needs the argument rot."),
+                    ({"action": "cycles", "rot": 0}, "cycles needs the argument seq."),
+                    ({"action": "cycles", "seq": "0x09af", "rot": 16},
+                     "The rot argument must be a whole number from 0 to 15 for order 4."),
+                    ({"action": "cycles", "seq": "0x09af", "rot": -1},
+                     "The rot argument must be a whole number from 0 to 15 for order 4."),
+                    ({"action": "cycles", "seq": "0x09af", "rot": "1"},
+                     "The rot argument must be a whole number from 0 to 15 for order 4."),
+                    ({"action": "cycles", "addr": "1.7.127.32767", "rot": 64},
+                     "The rot argument must be a whole number from 0 to 63 for order 6."),
+                    ({"action": "cycles", "order": 2, "rank": 0, "rot": 4},
+                     "The rot argument must be a whole number from 0 to 3 for order 2."),
+                    ({"action": "cycles", "seq": "0x1e", "rot": 0}, no_sequence),
+                    ({"action": "windows", "seq": "0x17", "rot": 0},
+                     "windows takes no argument rot."),
                     ({"action": "unrank", "addr": "0", "order": 3, "rank": 0},
                      "unrank takes no argument addr."),
                     ({"action": "rank", "addr": "1.8"}, None),
@@ -20381,7 +20459,8 @@ def check_debruijn(binary, up, debruijn):
                      "first must be a whole number from 0, and limit a whole number from 1 to 256."),
                     ({"action": "ordered", "order": 6, "rank": 0}, "ordered takes no argument rank."),
                     ({"action": "grow"}, "The action argument must be one of: expand, "
-                     "collapse, path, address, children, windows, rank, unrank, ordered."),
+                     "collapse, path, address, children, windows, cycles, rank, unrank, "
+                     "ordered."),
                     ({"action": "expand", "seq": "0x17", "order": 3},
                      "expand needs the argument mask."),
                     ({"action": "collapse", "seq": "0x17", "order": 3, "mask": 1},
@@ -20439,7 +20518,8 @@ def check_debruijn(binary, up, debruijn):
                 assert got == text if text else got.startswith("The addr argument"), \
                     (arguments, got)
     print("debruijn: mask tree, windows, numeric rank, unrank and ordered pages; a "
-          "sequence as seq, as addr and as order and rank; the "
+          "sequence as seq, as addr and as order and rank; the cycles of each sequence of "
+          "order 4 in each rotation, and of the other orders; the "
           "order from the width, rotated sequences; numbers in each base, negative "
           "numbers, the base of an address from its first mask; refused sequences, orders, "
           "ranks, masks, addresses and arguments: PASS")
