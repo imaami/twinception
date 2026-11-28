@@ -110,7 +110,7 @@ debruijn_wide_normalize (struct debruijn_wide *seq,
 /**
  * Validate a seed of order 2 to 7 and prepare its last-exit tree once.
  * Store in *e 0, EFAULT for a null seed, or EINVAL for an invalid order or
- * seed, unless e is null.
+ * seed. If e is null, return a generator of order 0 for every seed.
  */
 extern struct debruijn_wide_generator
 debruijn_wide_generator (struct debruijn_wide const *seed,
