@@ -1259,8 +1259,10 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 		struct debruijn_wide const last = debruijn_plugin_ranks(order);
 		if (debruijn_plugin_upto(slot, of, DEBRUIJN_PLUGIN_ARG_RANK, &last, order, &number))
 			return;
-		int const e = debruijn_plugin_ordered(order, &number, 1, debruijn_plugin_store,
-		                                      &normal);
+		/* rank prints the argument rank and reads no sequence. */
+		int const e = action == DEBRUIJN_PLUGIN_RANK ? 0
+		              : debruijn_plugin_ordered(order, &number, 1, debruijn_plugin_store,
+		                                        &normal);
 		if (e) {
 			mcp_slot_fail(slot, e);
 			return;
