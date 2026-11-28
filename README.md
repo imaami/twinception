@@ -2318,13 +2318,14 @@ at most 32768 for a sequence of the orders 2 to 5, 8192 for order 6 and 4096
 for order 7: a child of 128 or 256 bits takes longer to compute, and a call
 of that size takes about 10 milliseconds.
 
-The count of a block of sequences is a determinant. For the orders 2 to 6
-the tool computes each determinant anew. For the orders 7 and 8 it stores
-the inverse of the matrix, with all numbers modulo the prime 2^127 - 1, and
-changes it at each step. The inverse before the first step is written down
-from a formula. `rank` takes about half a millisecond at order 7 and 3.5
-milliseconds at order 8, and a page of 256 sequences of `ordered` about 1
-and 4.5 milliseconds.
+The count of a block of sequences is a determinant. Up to order 5 the tool
+computes each determinant anew. From order 6 on it stores the inverse of the
+matrix, with all numbers modulo the prime 2^127 - 1, and changes it at each
+step. The inverse before the first step is written down from a formula.
+`rank` takes about 0.08 milliseconds at order 6, half a millisecond at order
+7 and 3.5 milliseconds at order 8, and a page of 256 sequences of `ordered`
+about 0.3, 1 and 4.5 milliseconds. A page of order 6 from the rank 0 needs
+no count and stays in one 64-bit word.
 
 `cycles` rotates the sequence left by `rot` bits, from 0 to 2^n - 1, and
 reads the result by bit index. Index 0 is the least significant bit. The

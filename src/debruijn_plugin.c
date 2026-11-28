@@ -681,6 +681,14 @@ debruijn_plugin_narrow (uint64_t  word,
  * @p emit in numeric order, from the rank @p first on: debruijn_ordered()
  * for sequences of one limb, and debruijn_wide_ordered() above it. Returns
  * 0 or the first error.
+ *
+ * A page of the order 6 from a rank above 0 is also a page of
+ * debruijn_wide_ordered(). The way to the first sequence is counts of
+ * sequences, for which debruijn_ordered() computes a determinant each and
+ * debruijn_wide_ordered() changes a stored inverse: 0.39 ms against 0.08 ms
+ * at the order 6, and 20 against 18 microseconds at the order 5. The
+ * sequences after the first take a third of the time in one limb, so a
+ * page from the rank 0 is a page of debruijn_ordered().
  */
 static int
 debruijn_plugin_ordered (unsigned                    order,
@@ -689,7 +697,8 @@ debruijn_plugin_ordered (unsigned                    order,
                          debruijn_wide_emit_fn      *emit,
                          void                       *arg)
 {
-	if (order > DEBRUIJN_MAX_ORDER)
+	if (order > DEBRUIJN_MAX_ORDER ||
+	    (order == DEBRUIJN_MAX_ORDER && debruijn_plugin_width(first)))
 		return debruijn_wide_ordered(order, first, limit, emit, arg);
 	/* debruijn_ordered() emits nothing from a rank past the last. */
 	struct debruijn_plugin_emit to = { emit, arg };
@@ -739,8 +748,10 @@ debruijn_plugin_rank (struct debruijn_plugin_out *out,
 {
 	struct debruijn_wide rank = {};
 	unsigned narrow = 0;
-	int const e = order > DEBRUIJN_MAX_ORDER ? debruijn_wide_rank(&rank, seq, order)
-	                                         : debruijn_rank(&narrow, seq->limb[0], order);
+	/* The counts of the order 6 are faster with the stored inverse of the
+	 * wide library, as in debruijn_plugin_ordered(). */
+	int const e = order >= DEBRUIJN_MAX_ORDER ? debruijn_wide_rank(&rank, seq, order)
+	                                          : debruijn_rank(&narrow, seq->limb[0], order);
 	if (e == EINVAL) {
 		debruijn_plugin_no_sequence(out->slot, seq, order);
 		return;
