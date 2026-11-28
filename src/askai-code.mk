@@ -7,7 +7,7 @@
 # of clang and LLVM of the same llvm-config, and the LLVM library.
 ifeq (,$(filter-out default undefined,$(origin LLVM_CONFIG)))
 override LLVM_CONFIG := $(shell for c in llvm-config $(foreach v,30 29 28 27 26 25 24 23 22 21 20 19,llvm-config-$v); do \
-  v=$$($$c --version 2>/dev/null) && [ "$${v%%.*}" -ge 19 ] && { echo $$c | tee /dev/stderr; break; }; done)
+  v=$$($$c --version 2>/dev/null) && [ "$${v%%.*}" -ge 19 ] && { echo $$c; break; }; done)
 endif
 
 override LLVM_INCLUDEDIR := $(if $(LLVM_CONFIG),$(shell echo $(LLVM_CONFIG) --includedir >&2; $(LLVM_CONFIG) --includedir))
