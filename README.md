@@ -2321,8 +2321,10 @@ of that size takes about 10 milliseconds.
 The count of a block of sequences is a determinant. For the orders 2 to 6
 the tool computes each determinant anew. For the orders 7 and 8 it stores
 the inverse of the matrix, with all numbers modulo the prime 2^127 - 1, and
-changes it at each step, so that `rank` or a page of `ordered` takes about a
-millisecond at order 7 and about 6 milliseconds at order 8.
+changes it at each step. The inverse before the first step is written down
+from a formula. `rank` takes about half a millisecond at order 7 and 3.5
+milliseconds at order 8, and a page of 256 sequences of `ordered` about 1
+and 4.5 milliseconds.
 
 `cycles` rotates the sequence left by `rot` bits, from 0 to 2^n - 1, and
 reads the result by bit index. Index 0 is the least significant bit. The

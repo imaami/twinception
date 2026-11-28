@@ -99,6 +99,20 @@ debruijn_wide_mod_inverse (struct debruijn_wide_mod a)
 	return ret;
 }
 
+/* Returns @p k times 2^@p shift modulo p. @p shift is under 127. */
+static force_inline struct debruijn_wide_mod
+debruijn_wide_mod_shift (uint64_t k,
+                         unsigned shift)
+{
+	/* 2^127 is 1 modulo p: the bits of the product from the bit 127 up
+	 * are worth as much as the same bits from the bit 0 up. */
+	u128_type const low = ((u128_type)k << shift) & (((u128_type)1 << 127U) - 1U);
+	u128_type const high = (u128_type)k >> (127U - shift);
+	return debruijn_wide_mod_add(
+		(struct debruijn_wide_mod){ (uint64_t)low, (uint64_t)(low >> 64U) },
+		(struct debruijn_wide_mod){ (uint64_t)high, (uint64_t)(high >> 64U) });
+}
+
 /* The count of the completions of a prefix of a tour. det is the count:
  * the determinant of the matrix of the allowed last exits. inverse is the
  * inverse of that matrix, of size rows and size columns, row after row.
@@ -124,12 +138,33 @@ debruijn_wide_counter_at (struct debruijn_wide_counter *counter,
 /* Allocates the counter of the empty prefix of the tours of the order
  * @p order, from 2 to 8: each exit of each nonroot vertex can be its last
  * exit. Returns the counter and 0 in @p *e, or nullptr and ENOMEM.
+ *
+ * The inverse is written down without an elimination. Let a walk leave
+ * each vertex by one of its two exits, each with the probability 1/2. The
+ * matrix of debruijn_completions() is 2 (I - P), where P is the
+ * probabilities of the steps of the walk between the nonroot vertices. Its
+ * inverse is half the sum of the powers of P: the entry in the row of the
+ * vertex v and the column of the vertex u is half the expected number of
+ * the times that a walk from v is at u before it is at the vertex 0. A
+ * vertex is the last bits of the random bits of the walk, so that number
+ * is a sum and difference of expected waiting times of words in random
+ * bits, which are sums of powers of 2 for the overlaps of the words. With
+ * n bits in a vertex, the entry is k / 2^n for
+ *
+ *   k = 2^n + 1 - 2^t - 2^l + the sum of 2^(j-1) over each j from 1 to n
+ *       for which the low j bits of v are the high j bits of u,
+ *
+ * where t is the count of the zero bits at the low end of v, and l the
+ * count of the zero bits at the high end of the n bits of u. 2^127 is 1
+ * modulo p, so the division by 2^n is a product with 2^(127-n). The count
+ * of all tours is 2^(2^n - n - 1).
  */
 static struct debruijn_wide_counter *
 debruijn_wide_counter_create (unsigned  order,
                               int      *e)
 {
-	unsigned const vertices = 1U << (order - 1U);
+	unsigned const bits = order - 1U;
+	unsigned const vertices = 1U << bits;
 	size_t const size = vertices - 1U;
 	struct debruijn_wide_counter *counter =
 		calloc(1, sizeof *counter + size * size * sizeof counter->inverse[0]);
@@ -138,48 +173,19 @@ debruijn_wide_counter_create (unsigned  order,
 		return nullptr;
 	}
 	counter->size = size;
-	struct debruijn_wide_mod const one = { 1, 0 };
-	/* The matrix of debruijn_completions(). In the row of a vertex, the
-	 * entry in the column of the vertex is the count of its exits, and the
-	 * entry in the column of the vertex that an exit leads to is -1. The
-	 * matrix is without the row and the column of vertex 0. */
+	counter->det = debruijn_wide_mod_shift(1, vertices - order);
 	for (unsigned v = 1; v < vertices; ++v) {
-		for (unsigned b = 0; b < 2; ++b) {
-			unsigned const u = (2U * v + b) & (vertices - 1U);
-			struct debruijn_wide_mod *const own =
-				debruijn_wide_counter_at(counter, v, v);
-			*own = debruijn_wide_mod_add(*own, one);
-			if (!u)
-				continue;
-			struct debruijn_wide_mod *const to =
-				debruijn_wide_counter_at(counter, v, u);
-			*to = debruijn_wide_mod_sub(*to, one);
-		}
-	}
-	/* The inverse in place, by the elimination of Gauss and Jordan. A
-	 * pivot is the quotient of two leading minors. Those are counts of
-	 * forests, which are not 0 and under p, so no pivot is 0 and the rows
-	 * need no exchange. The determinant is the product of the pivots. */
-	struct debruijn_wide_mod *const a = counter->inverse;
-	counter->det = one;
-	for (size_t k = 0; k < size; ++k) {
-		struct debruijn_wide_mod *const row = &a[k * size];
-		counter->det = debruijn_wide_mod_mul(counter->det, row[k]);
-		struct debruijn_wide_mod const inverse = debruijn_wide_mod_inverse(row[k]);
-		row[k] = one;
-		for (size_t j = 0; j < size; ++j)
-			row[j] = debruijn_wide_mod_mul(row[j], inverse);
-		for (size_t i = 0; i < size; ++i) {
-			struct debruijn_wide_mod *const other = &a[i * size];
-			struct debruijn_wide_mod const factor = other[k];
-			if (i == k || !(factor.lo | factor.hi))
-				continue;
-			other[k] = (struct debruijn_wide_mod){};
-			for (size_t j = 0; j < size; ++j) {
-				struct debruijn_wide_mod const part =
-					debruijn_wide_mod_mul(factor, row[j]);
-				other[j] = debruijn_wide_mod_sub(other[j], part);
-			}
+		/* 2^t is the lowest set bit of v. */
+		unsigned const base = vertices + 1U - (v & -v);
+		for (unsigned u = 1; u < vertices; ++u) {
+			/* u is stdc_bit_width(u) bits wide, without the l zero
+			 * bits at its high end. */
+			unsigned k = base - (vertices >> stdc_bit_width(u));
+			for (unsigned j = 1; j <= bits; ++j)
+				if ((v & ((1U << j) - 1U)) == u >> (bits - j))
+					k += 1U << (j - 1U);
+			*debruijn_wide_counter_at(counter, v, u) =
+				debruijn_wide_mod_shift(k, 127U - bits);
 		}
 	}
 	*e = 0;
